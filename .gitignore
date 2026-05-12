@@ -1,0 +1,19 @@
+# Environment
+venv/
+.env
+
+# Data (PDFs and images are large — don't commit)
+data/pdfs/
+data/images_en/
+data/images_ar/
+ocr_output/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
