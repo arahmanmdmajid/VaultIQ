@@ -3,10 +3,18 @@ venv/
 .env
 
 # Data (PDFs and images are large — don't commit)
-data/pdfs/
-data/images_en/
-data/images_ar/
-ocr_output/
+data/pdfs/*
+data/images_en/*
+data/images_ar/*
+ocr_output/english/*
+ocr_output/arabic/*
+
+# But keep the folder placeholders
+!data/pdfs/.gitkeep
+!data/images_en/.gitkeep
+!data/images_ar/.gitkeep
+!ocr_output/english/.gitkeep
+!ocr_output/arabic/.gitkeep
 
 # Python
 __pycache__/
