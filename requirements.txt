@@ -5,6 +5,7 @@ python-dotenv>=1.0.0
 
 # OCR
 google-genai>=1.0.0
+pageindex
 
 # Notebook
 jupyter>=1.0.0
