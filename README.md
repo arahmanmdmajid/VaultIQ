@@ -1,6 +1,8 @@
 # MDA Urban Intelligence
 
-A bilingual Arabic/English RAG (Retrieval-Augmented Generation) pipeline for querying the **Madinah Tranquil Livable City 2024** report. Built as part of a hackathon project for the Madinah Development Authority.
+A bilingual Arabic/English RAG (Retrieval-Augmented Generation) pipeline for querying the **Madinah Tranquil Livable City 2024** report.
+
+Built for the **[TechEx Intelligent Enterprise Solutions Hackathon](https://lablab.ai/ai-hackathons/techex-intelligent-enterprise-solutions-hackathon/)** hosted on lablab.ai — focused on delivering enterprise-grade AI solutions for real-world government and business challenges.
 
 ## What It Does
 
@@ -144,9 +146,42 @@ spike_01 → spike_02 → spike_03 → spike_04 → spike_05 → spike_06
 - [ ] **Multi-turn conversation** — maintain chat history so follow-up questions reference earlier answers
 - [ ] **Hybrid retrieval** — combine PageIndex visual retrieval with keyword fallback for questions that target specific numbers or names
 - [ ] **Evaluation dashboard** — automated scoring against a curated question set to track pipeline quality as we iterate
+- [ ] **AI Governance layer (Lobster Trap)** — see below
+
+---
+
+## AI Governance — Lobster Trap
+
+> **Lobster Trap** is a tool from one of the hackathon's sponsors and will be integrated as a governance wrapper around the completed pipeline before the demo.
+
+**Repo:** [github.com/veeainc/lobstertrap](https://github.com/veeainc/lobstertrap)
+
+Lobster Trap is an open-source Go-based reverse proxy that sits between the application and any LLM backend (Groq, Gemini, Ollama, or any OpenAI-compatible API). It adds a security and governance layer with zero code changes to the existing app.
+
+```
+User Query → Lobster Trap (:8080) → Groq / Llama 4 Scout → Answer
+```
+
+It inspects every prompt and response in sub-millisecond time using regex-based Deep Packet Inspection — no additional LLM calls needed for the inspection itself.
+
+**Key features:**
+
+| Feature | Description |
+|---|---|
+| PII detection | Flags SSNs, credit cards, phone numbers, official names |
+| Firewall rules | iptables-style policies: ALLOW / DENY / LOG / QUARANTINE / HUMAN_REVIEW |
+| Intent classification | Detects code execution attempts, file I/O, network access requests |
+| Rate limiting | Requests-per-minute and burst thresholds |
+| Audit logging | Full JSON log of every decision for compliance trails |
+
+**Why it matters for this project:**
+
+We are building a RAG system over Saudi government urban development reports. Enterprise judges care about audit trails, PII protection, and access control — not just answer quality. Lobster Trap provides all of that as a single binary added on top of the finished pipeline.
+
+**Integration plan:** Add after all spikes pass, as a governance wrapper around the complete pipeline before the demo.
 
 ---
 
 ## Team
 
-Built for the Madinah Development Authority hackathon.
+Built for the **TechEx Intelligent Enterprise Solutions Hackathon** on [lablab.ai](https://lablab.ai/ai-hackathons/techex-intelligent-enterprise-solutions-hackathon/).
