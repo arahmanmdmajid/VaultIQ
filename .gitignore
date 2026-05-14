@@ -25,3 +25,7 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Scratch / temp notebooks and files
+notebooks/Untitled*.ipynb
+notebooks/temp_*.md
