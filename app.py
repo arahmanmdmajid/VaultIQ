@@ -18,6 +18,7 @@ import tempfile
 import time
 
 import fitz  # PyMuPDF
+import requests
 import streamlit as st
 from dotenv import load_dotenv
 from groq import Groq
@@ -94,58 +95,60 @@ def wait_for_indexing(doc_id: str, timeout: int = 180) -> bool:
     return False
 
 
-def retrieve_pages(doc_id: str, question: str, poll_timeout: int = 60) -> tuple[list[int], dict]:
-    """
-    Ask PageIndex which pages are relevant.
-    Returns (sorted list of 1-based page numbers, raw retrieval result for debugging).
-    """
-    submit = pi_client.submit_query(doc_id=doc_id, query=question)
-    rid    = submit.get("retrieval_id") or submit.get("id") or submit.get("query_id")
-    if not rid:
-        return [], {"error": "No retrieval_id in submit response", "submit_response": submit}
-    for _ in range(poll_timeout):
-        result = pi_client.get_retrieval(rid)
-        if result.get("status") == "completed" or result.get("retrieved_nodes"):
-            return _parse_page_numbers(result), result
-        if result.get("status") == "failed":
-            return [], result
-        time.sleep(1)
-    return [], {"error": "Poll timeout", "last_result": result}
+PAGEINDEX_CHAT_URL = "https://api.pageindex.ai/chat/completions"
 
 
-def _parse_page_numbers(retrieval_result: dict) -> list[int]:
+def retrieve_pages(doc_id: str, question: str) -> tuple[list[int], dict]:
     """
-    Extract page numbers from a PageIndex retrieval result.
+    Use the PageIndex Chat API (the non-deprecated successor to submit_query/get_retrieval)
+    to find which pages are relevant to the question.
 
-    Tries two strategies in order:
-    1. physical_index field inside relevant_contents items
-       e.g. "<physical_index_3>" → page 3
-    2. page_index field directly on each retrieved node
-       e.g. node["page_index"] = 3 → page 3
+    With enable_citations=True, PageIndex embeds page references in its answer as
+    citation tags: <doc=filename.pdf;page=N>
+    We parse those tags to get the page numbers, then feed those pages to Groq Vision.
+
+    Returns (sorted list of 1-based page numbers, raw API response for debugging).
+    """
+    payload = {
+        "doc_id"          : doc_id,
+        "messages"        : [{"role": "user", "content": question}],
+        "stream"          : False,
+        "enable_citations": True,
+    }
+    headers = {
+        "api_key"     : os.getenv("PAGEINDEX_API_KEY"),
+        "Content-Type": "application/json",
+    }
+    response = requests.post(PAGEINDEX_CHAT_URL, json=payload, headers=headers, timeout=60)
+    result   = response.json()
+
+    content  = (
+        result.get("choices", [{}])[0]
+              .get("message", {})
+              .get("content", "")
+    )
+    page_nums = _parse_citation_pages(content)
+    return page_nums, result
+
+
+def _parse_citation_pages(text: str) -> list[int]:
+    """
+    Extract page numbers from PageIndex citation tags.
+    Handles formats:
+      <doc=filename.pdf;page=3>
+      [page=3]
+      page 3  (plain fallback)
     """
     pages = set()
 
-    for node in retrieval_result.get("retrieved_nodes", []):
-        # Strategy 1: physical_index inside relevant_contents
-        for group in node.get("relevant_contents", []):
-            items = group if isinstance(group, list) else [group]
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                raw   = item.get("physical_index", "")
-                match = re.search(r"physical_index_(\d+)", raw)
-                if match:
-                    pages.add(int(match.group(1)))
+    # Primary: <doc=...;page=N>
+    for m in re.finditer(r"<doc=[^>]*?;page=(\d+)>", text):
+        pages.add(int(m.group(1)))
 
-        # Strategy 2: page_index directly on the node (fallback)
-        if not pages:
-            pi = node.get("page_index")
-            if isinstance(pi, int) and pi > 0:
-                pages.add(pi)
-            elif isinstance(pi, str):
-                m = re.search(r"\d+", pi)
-                if m:
-                    pages.add(int(m.group()))
+    # Fallback: [page=N] or [p=N]
+    if not pages:
+        for m in re.finditer(r"\[(?:page|p)=(\d+)\]", text):
+            pages.add(int(m.group(1)))
 
     return sorted(pages)
 
@@ -334,10 +337,24 @@ if question:
                 st.json(raw_retrieval)
 
         if not page_nums:
-            answer = (
-                "PageIndex did not identify relevant pages for this question. "
-                "Try rephrasing or check that the document covers this topic."
+            # PageIndex answered but returned no parseable page citations.
+            # Surface its text answer as a fallback so the user still gets something useful.
+            pi_answer = (
+                raw_retrieval.get("choices", [{}])[0]
+                             .get("message", {})
+                             .get("content", "")
             )
+            if pi_answer:
+                answer = (
+                    f"{pi_answer}\n\n"
+                    "_⚠️ No specific page citations were returned — "
+                    "answer is from PageIndex text reasoning, not visual page reading._"
+                )
+            else:
+                answer = (
+                    "PageIndex did not return relevant content for this question. "
+                    "Try rephrasing or check that the document covers this topic."
+                )
             st.markdown(answer)
             st.session_state.messages.append(
                 {"role": "assistant", "content": answer, "page_images": []}
