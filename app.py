@@ -230,6 +230,15 @@ def wait_for_indexing(doc_id: str, timeout: int = 180) -> bool:
     return False
 
 
+def _active_pi_key() -> str:
+    """Return the PageIndex API key to use: user-supplied key takes priority."""
+    return (
+        st.session_state.get("user_pi_key")
+        or os.getenv("PAGEINDEX_API_KEY")
+        or ""
+    )
+
+
 def retrieve_pages(doc_id: str, question: str) -> tuple[list[int], dict, float]:
     payload = {
         "doc_id"          : doc_id,
@@ -238,7 +247,7 @@ def retrieve_pages(doc_id: str, question: str) -> tuple[list[int], dict, float]:
         "enable_citations": True,
     }
     headers = {
-        "api_key"     : os.getenv("PAGEINDEX_API_KEY"),
+        "api_key"     : _active_pi_key(),
         "Content-Type": "application/json",
     }
     t0       = time.perf_counter()
@@ -640,6 +649,29 @@ with st.sidebar:
             if st.session_state.is_demo:
                 st.session_state[f"messages_{st.session_state.demo_lang}"] = []
             st.rerun()
+
+    st.divider()
+
+    # PageIndex API key — lets users supply their own key if the app quota is exhausted
+    with st.expander("🔑 PageIndex API key"):
+        key_input = st.text_input(
+            "Your PageIndex key",
+            value=st.session_state.get("user_pi_key", ""),
+            type="password",
+            placeholder="pi-…",
+            label_visibility="collapsed",
+            help="Used only for PageIndex retrieval calls this session. Never stored.",
+        )
+        if key_input != st.session_state.get("user_pi_key", ""):
+            st.session_state["user_pi_key"] = key_input.strip() or None
+            st.rerun()
+
+        if st.session_state.get("user_pi_key"):
+            st.success("✓ Custom key active", icon="🔑")
+        elif os.getenv("PAGEINDEX_API_KEY"):
+            st.caption("Using app-level key.")
+        else:
+            st.warning("No PageIndex key — fallback retrieval active.", icon="⚠️")
 
     st.divider()
     st.caption("**Stack**")
