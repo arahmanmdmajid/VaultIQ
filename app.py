@@ -300,15 +300,16 @@ def upload_pdf_to_pageindex(pdf_bytes: bytes) -> str:
         tmp.write(pdf_bytes)
         tmp_path = tmp.name
     try:
-        result = pi_client.submit_document(file_path=tmp_path)
+        result = _get_pi_client().submit_document(file_path=tmp_path)
         return result.get("doc_id") or result.get("id") or result.get("document_id")
     finally:
         os.unlink(tmp_path)
 
 
 def wait_for_indexing(doc_id: str, timeout: int = 180) -> bool:
+    client = _get_pi_client()
     for _ in range(timeout):
-        if pi_client.is_retrieval_ready(doc_id):
+        if client.is_retrieval_ready(doc_id):
             return True
         time.sleep(1)
     return False
@@ -319,6 +320,19 @@ def _active_pi_key() -> str:
     if st.session_state.get("use_custom_pi_key"):
         return st.session_state.get("user_pi_key") or ""
     return os.getenv("PAGEINDEX_API_KEY") or ""
+
+
+def _get_pi_client() -> PageIndexClient:
+    """Return a PageIndex client for the currently active API key.
+
+    The cached `pi_client` is initialised with the app-level key.  When a user
+    supplies their own key we must create a fresh client so that document uploads
+    and readiness checks are made against their account, not ours.
+    """
+    active_key = _active_pi_key()
+    if active_key and active_key != os.getenv("PAGEINDEX_API_KEY", ""):
+        return PageIndexClient(api_key=active_key)
+    return pi_client
 
 
 def retrieve_pages(doc_id: str, question: str) -> tuple[list[int], dict, float]:
@@ -743,6 +757,12 @@ with st.sidebar:
                 st.rerun()
             if st.session_state.get("user_pi_key"):
                 st.success("✓ Custom key active", icon="🔑")
+                if st.session_state.get("is_demo"):
+                    st.info(
+                        "The demo document will be re-indexed under your key "
+                        "on your first query (~30 s, once per session).",
+                        icon="ℹ️",
+                    )
             else:
                 st.caption("Enter your key above.")
         else:
@@ -1204,6 +1224,34 @@ if question:
                         st.session_state.doc_id, question
                     )
                 st.session_state.last_raw = raw_retrieval
+
+                # ── Auto re-index demo doc under the user's own API key ───────
+                # The pre-loaded demo doc_ids are registered under the app's
+                # PageIndex account.  When a user supplies their own key those
+                # IDs don't exist in their account and PageIndex returns a
+                # "Document not found" error.  We detect this, re-index the
+                # same PDF under their key, cache the new doc_id, then retry.
+                _detail = str(raw_retrieval.get("detail", "")).lower()
+                if (
+                    "not found" in _detail
+                    and st.session_state.get("use_custom_pi_key")
+                    and st.session_state.get("is_demo")
+                    and st.session_state.pdf_bytes
+                ):
+                    with st.spinner(
+                        "Indexing demo document under your PageIndex key — "
+                        "this takes ~30 seconds and only happens once per session…"
+                    ):
+                        new_doc_id = upload_pdf_to_pageindex(st.session_state.pdf_bytes)
+                        st.session_state.doc_id = new_doc_id
+                        ready = wait_for_indexing(new_doc_id)
+                    if ready:
+                        page_nums, raw_retrieval, pi_ms = retrieve_pages(
+                            new_doc_id, question
+                        )
+                        st.session_state.last_raw = raw_retrieval
+                    else:
+                        st.warning("Re-indexing timed out — falling back to text retrieval.")
 
                 # ── Automatic fallback when PageIndex is unavailable ──────────
                 # Detected via API errors (InsufficientCredits, auth failures, etc.)
