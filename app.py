@@ -128,15 +128,45 @@ SAMPLE_QUESTIONS = {
 def get_clients():
     pi          = PageIndexClient(api_key=os.getenv("PAGEINDEX_API_KEY"))
     groq_direct = Groq(api_key=os.getenv("GROQ_API_KEY"))
-    groq_lt     = Groq(api_key=os.getenv("GROQ_API_KEY"), base_url=LOBSTERTRAP_URL)
-    return pi, groq_direct, groq_lt
+    return pi, groq_direct
 
-pi_client, _groq_direct, _groq_via_lt = get_clients()
+pi_client, _groq_direct = get_clients()
 
 
-def active_groq() -> Groq:
-    """Return the Groq client to use — routed through Lobster Trap when active."""
-    return _groq_via_lt if st.session_state.get("lt_active") else _groq_direct
+def groq_chat(model: str, messages: list, temperature: float = 0):
+    """
+    Call Groq chat completions — via Lobster Trap or directly.
+
+    The Groq SDK appends /openai/v1/ to whatever base_url you set, so it
+    cannot be pointed at Lobster Trap's /v1/chat/completions endpoint without
+    constructing a wrong URL.  When Lobster Trap is active we bypass the SDK
+    and call http://localhost:8080/v1/chat/completions with requests directly,
+    which is the standard OpenAI-compatible path Lobster Trap expects.
+    """
+    if st.session_state.get("lt_active"):
+        resp = requests.post(
+            f"{LOBSTERTRAP_URL}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {os.getenv('GROQ_API_KEY')}",
+                "Content-Type" : "application/json",
+            },
+            json={"model": model, "messages": messages, "temperature": temperature},
+            timeout=120,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip(), resp.json().get("usage", {})
+    else:
+        response = _groq_direct.chat.completions.create(
+            model=model, messages=messages, temperature=temperature,
+        )
+        usage = {}
+        if response.usage:
+            usage = {
+                "prompt_tokens"    : response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens"     : response.usage.total_tokens,
+            }
+        return response.choices[0].message.content.strip(), usage
 
 
 def check_lobstertrap() -> bool:
@@ -320,15 +350,9 @@ def retrieve_pages_fallback(
         "Page excerpts:\n" + "\n\n".join(excerpts)
     )
 
-    t0       = time.perf_counter()
-    response = active_groq().chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0,
-    )
+    t0      = time.perf_counter()
+    content, _ = groq_chat("llama-3.1-8b-instant", [{"role": "user", "content": prompt}])
     elapsed = (time.perf_counter() - t0) * 1000
-
-    content = response.choices[0].message.content.strip()
     try:
         m     = re.search(r"\[[\d\s,]+\]", content)
         pages = json.loads(m.group(0)) if m else []
@@ -374,23 +398,10 @@ def answer_from_images(
             "image_url" : {"url": f"data:image/jpeg;base64,{b64}"},
         })
 
-    t0       = time.perf_counter()
-    response = active_groq().chat.completions.create(
-        model=VISION_MODEL,
-        messages=[{"role": "user", "content": content}],
-        temperature=0,
-    )
-    elapsed = (time.perf_counter() - t0) * 1000
-
-    usage = {}
-    if response.usage:
-        usage = {
-            "prompt_tokens"    : response.usage.prompt_tokens,
-            "completion_tokens": response.usage.completion_tokens,
-            "total_tokens"     : response.usage.total_tokens,
-        }
-
-    return response.choices[0].message.content.strip(), usage, elapsed
+    t0             = time.perf_counter()
+    answer, usage  = groq_chat(VISION_MODEL, [{"role": "user", "content": content}])
+    elapsed        = (time.perf_counter() - t0) * 1000
+    return answer, usage, elapsed
 
 
 def detect_language(text: str) -> str:
