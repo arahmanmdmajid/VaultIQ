@@ -39,7 +39,7 @@ User Question
 ## Project Structure
 
 ```
-mda-urban-intelligence/
+VaultIQ/
 ├── app.py                                # Streamlit chat app (main entry point)
 ├── lobstertrap/
 │   ├── policy.yaml                       # AI governance policy (ingress + egress rules)
@@ -67,8 +67,8 @@ mda-urban-intelligence/
 ### 1. Clone and set up the environment
 
 ```bash
-git clone https://github.com/arahmanmdmajid/mda-urban-intelligence.git
-cd mda-urban-intelligence
+git clone https://github.com/arahmanmdmajid/VaultIQ.git
+cd VaultIQ
 
 python -m venv venv
 # Windows:
@@ -109,11 +109,11 @@ cd /tmp/lt
 
 # Windows:
 make build-windows
-copy lobstertrap.exe path\to\mda-urban-intelligence\lobstertrap\
+copy lobstertrap.exe path\to\VaultIQ\lobstertrap\
 
 # macOS/Linux:
 make build
-cp lobstertrap path/to/mda-urban-intelligence/lobstertrap/
+cp lobstertrap path/to/VaultIQ/lobstertrap/
 ```
 
 **Start the proxy:**
