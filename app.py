@@ -35,6 +35,12 @@ RENDER_DPI         = 150
 PAGEINDEX_CHAT_URL = "https://api.pageindex.ai/chat/completions"
 ROOT               = Path(__file__).parent
 
+# Lobster Trap — AI governance reverse proxy (https://github.com/veeainc/lobstertrap)
+# When running, all Groq calls are routed through it for PII detection, firewall rules,
+# rate limiting, and audit logging. Falls back to direct Groq if not reachable.
+LOBSTERTRAP_URL   = os.getenv("LOBSTERTRAP_URL", "http://localhost:8080/v1")
+LOBSTERTRAP_AUDIT = ROOT / "lobstertrap" / "audit.jsonl"
+
 DEMO_DOCS = {
     "en": {
         "label"   : "Madinah Tranquil Livable City Report 2024",
@@ -120,12 +126,26 @@ SAMPLE_QUESTIONS = {
 
 @st.cache_resource
 def get_clients():
-    return (
-        PageIndexClient(api_key=os.getenv("PAGEINDEX_API_KEY")),
-        Groq(api_key=os.getenv("GROQ_API_KEY")),
-    )
+    pi          = PageIndexClient(api_key=os.getenv("PAGEINDEX_API_KEY"))
+    groq_direct = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    groq_lt     = Groq(api_key=os.getenv("GROQ_API_KEY"), base_url=LOBSTERTRAP_URL)
+    return pi, groq_direct, groq_lt
 
-pi_client, groq_client = get_clients()
+pi_client, _groq_direct, _groq_via_lt = get_clients()
+
+
+def active_groq() -> Groq:
+    """Return the Groq client to use — routed through Lobster Trap when active."""
+    return _groq_via_lt if st.session_state.get("lt_active") else _groq_direct
+
+
+def check_lobstertrap() -> bool:
+    """Ping the Lobster Trap dashboard endpoint to see if the proxy is running."""
+    try:
+        r = requests.get("http://localhost:8080/_lobstertrap/", timeout=0.8)
+        return r.status_code < 500
+    except Exception:
+        return False
 
 
 # ─── Image helpers ────────────────────────────────────────────────────────────
@@ -301,7 +321,7 @@ def retrieve_pages_fallback(
     )
 
     t0       = time.perf_counter()
-    response = groq_client.chat.completions.create(
+    response = active_groq().chat.completions.create(
         model="llama-3.1-8b-instant",
         messages=[{"role": "user", "content": prompt}],
         temperature=0,
@@ -355,7 +375,7 @@ def answer_from_images(
         })
 
     t0       = time.perf_counter()
-    response = groq_client.chat.completions.create(
+    response = active_groq().chat.completions.create(
         model=VISION_MODEL,
         messages=[{"role": "user", "content": content}],
         temperature=0,
@@ -421,6 +441,7 @@ if "initialized" not in st.session_state:
     st.session_state.pipeline_log  = []
     st.session_state.last_stats    = None
     st.session_state.last_raw      = None
+    st.session_state.lt_active     = check_lobstertrap()
     load_demo("en")
 
 
@@ -685,9 +706,26 @@ with st.sidebar:
             else:
                 st.warning("No default key — fallback retrieval active.", icon="⚠️")
 
+    # Lobster Trap governance status
+    lt_on = st.session_state.lt_active
+    with st.expander(
+        f"🛡️ Lobster Trap — {'**Active** ✅' if lt_on else 'Inactive ⚪'}",
+        expanded=lt_on,
+    ):
+        if lt_on:
+            st.success("All Groq calls are proxied through Lobster Trap.")
+            st.caption("PII detection · Firewall rules · Audit logging · Rate limiting")
+        else:
+            st.info("Lobster Trap is not running — direct Groq API in use.")
+            st.caption("Run `lobstertrap/start.bat` (Windows) or `lobstertrap/start.sh` to activate.")
+        if st.button("↺ Refresh status", use_container_width=True, key="lt_refresh"):
+            st.session_state.lt_active = check_lobstertrap()
+            st.rerun()
+
     st.divider()
     st.caption("**Stack**")
-    st.caption("PageIndex · Groq · Llama 4 Scout · Streamlit")
+    lt_label = "Lobster Trap ✅ · " if lt_on else ""
+    st.caption(f"PageIndex · Groq · Llama 4 Scout · {lt_label}Streamlit")
     st.caption("TechEx Intelligent Enterprise Solutions Hackathon")
 
 
@@ -769,12 +807,13 @@ with tab_dev:
 
     # ── 5 sub-tabs ────────────────────────────────────────────────────────────
 
-    sub_status, sub_timings, sub_raw, sub_rag, sub_models = st.tabs([
+    sub_status, sub_timings, sub_raw, sub_rag, sub_models, sub_gov = st.tabs([
         "⚡ Pipeline Status",
         "⏱ Timings",
         "📄 Raw JSON",
         "🔍 Vision RAG Debug",
         "🤖 Models",
+        "🛡️ Governance",
     ])
 
     # ── Pipeline Status ───────────────────────────────────────────────────────
@@ -960,6 +999,86 @@ with tab_dev:
             st.markdown(health_html + doc_html, unsafe_allow_html=True)
         with col_models:
             st.markdown(models_html, unsafe_allow_html=True)
+
+    # ── Governance (Lobster Trap) ──────────────────────────────────────────────
+    with sub_gov:
+        lt_on = st.session_state.lt_active
+
+        # Status
+        lt_status_html = (
+            '<div class="dev-section">'
+            '<div class="dev-section-title">Lobster Trap — AI Governance Proxy</div>'
+            + step_row(
+                "green" if lt_on else "grey",
+                "Proxy status",
+                "http://localhost:8080/v1" if lt_on else "not running",
+                "ACTIVE" if lt_on else "INACTIVE",
+            )
+            + step_row("cyan",  "Backend",          "https://api.groq.com/openai/v1")
+            + step_row("cyan",  "Policy file",      "lobstertrap/policy.yaml")
+            + step_row("cyan",  "Audit log",        "lobstertrap/audit.jsonl")
+            + step_row("cyan",  "Dashboard",        "http://localhost:8080/_lobstertrap/")
+            + '</div>'
+        )
+
+        # Policy summary
+        policy_html = (
+            '<div class="dev-section">'
+            '<div class="dev-section-title">Active Policy Rules</div>'
+            + step_row("red",   "block_prompt_injection",      "DENY",   "priority 100")
+            + step_row("red",   "block_code_execution_intent", "DENY",   "priority 90")
+            + step_row("red",   "block_system_command_intent", "DENY",   "priority 89")
+            + step_row("amber", "log_pii_in_query",            "LOG",    "priority 80")
+            + step_row("amber", "flag_high_risk_queries",      "HUMAN_REVIEW", "risk > 0.75")
+            + step_row("amber", "log_queries_with_urls",       "LOG",    "priority 60")
+            + step_row("amber", "log_pii_in_response",         "LOG",    "egress · priority 100")
+            + step_row("amber", "log_credentials_in_response", "LOG",    "egress · priority 90")
+            + '</div>'
+        )
+
+        col_lt, col_policy = st.columns(2)
+        with col_lt:
+            st.markdown(lt_status_html, unsafe_allow_html=True)
+            if not lt_on:
+                st.info(
+                    "Start Lobster Trap to enable governance:\n\n"
+                    "```\nlobstertrap\\start.bat\n```\n"
+                    "Then click **↺ Refresh status** in the sidebar."
+                )
+        with col_policy:
+            st.markdown(policy_html, unsafe_allow_html=True)
+
+        # Audit log
+        st.markdown("---")
+        st.markdown("**Audit Log**")
+        if LOBSTERTRAP_AUDIT.exists():
+            lines = LOBSTERTRAP_AUDIT.read_text(encoding="utf-8").strip().splitlines()
+            if lines:
+                # Show last 20 entries, most recent first
+                recent = lines[-20:][::-1]
+                st.caption(f"{len(lines)} total entries · showing last {len(recent)}")
+                for raw_line in recent:
+                    try:
+                        import json as _json
+                        entry = _json.loads(raw_line)
+                        action    = entry.get("action", "LOG")
+                        direction = entry.get("direction", "")
+                        rule      = entry.get("matched_rule", "—")
+                        dot       = "green" if action == "ALLOW" else "red" if action == "DENY" else "amber"
+                        ts        = entry.get("timestamp", "")[:19]
+                        st.markdown(
+                            step_row(dot, f"{ts}  [{direction}]", rule, action),
+                            unsafe_allow_html=True,
+                        )
+                    except Exception:
+                        st.code(raw_line, language=None)
+            else:
+                st.caption("Audit log is empty — no queries have been proxied yet.")
+        else:
+            st.caption(
+                "No audit log yet — start Lobster Trap and ask a question. "
+                "The log will appear here automatically."
+            )
 
 
 # ─── Chat input (always at page bottom) ──────────────────────────────────────

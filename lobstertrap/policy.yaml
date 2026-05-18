@@ -1,0 +1,97 @@
+version: "1.0"
+policy_name: "vaultiq-government-doc-rag"
+default_action: LOG   # log everything by default — full audit trail
+
+# ── Rate limiting ──────────────────────────────────────────────────────────────
+# Conservative limits appropriate for a shared demo/POC environment.
+rate_limits:
+  requests_per_minute: 30
+  requests_per_hour: 200
+  burst_threshold: 10
+
+# ── Ingress rules (inspect the prompt before it reaches the LLM) ───────────────
+ingress_rules:
+
+  # 1. Block prompt injection attempts outright.
+  #    Government document queries should never contain injection patterns.
+  - name: block_prompt_injection
+    priority: 100
+    action: DENY
+    deny_message: >
+      Query rejected: potential prompt injection detected.
+      VaultIQ only accepts natural-language questions about the uploaded document.
+    conditions:
+      - field: contains_injection_patterns
+        match_type: boolean
+        value: true
+
+  # 2. Deny requests that attempt to trigger code execution or system commands.
+  #    A document Q&A system has no legitimate need for these.
+  - name: block_code_execution_intent
+    priority: 90
+    action: DENY
+    deny_message: >
+      Query rejected: code execution or system command intent detected.
+    conditions:
+      - field: intent_category
+        match_type: exact
+        value: code_execution
+
+  - name: block_system_command_intent
+    priority: 89
+    action: DENY
+    deny_message: >
+      Query rejected: system command intent detected.
+    conditions:
+      - field: intent_category
+        match_type: exact
+        value: system
+
+  # 3. Flag queries that contain PII — log for compliance, but allow through.
+  #    A judge or auditor can review these in the audit log.
+  - name: log_pii_in_query
+    priority: 80
+    action: LOG
+    conditions:
+      - field: contains_pii
+        match_type: boolean
+        value: true
+
+  # 4. Escalate high-risk queries for human review rather than silently blocking.
+  - name: flag_high_risk_queries
+    priority: 70
+    action: HUMAN_REVIEW
+    conditions:
+      - field: risk_score
+        match_type: threshold
+        value: 0.75
+
+  # 5. Log any query that contains URLs (unusual for a doc-query use-case).
+  - name: log_queries_with_urls
+    priority: 60
+    action: LOG
+    conditions:
+      - field: contains_urls
+        match_type: boolean
+        value: true
+
+# ── Egress rules (inspect the LLM response before it reaches the user) ────────
+egress_rules:
+
+  # 1. Log responses that contain PII — the model should not be leaking personal data.
+  - name: log_pii_in_response
+    priority: 100
+    action: LOG
+    conditions:
+      - field: contains_pii
+        match_type: boolean
+        value: true
+
+  # 2. Log responses that contain credentials or secrets.
+  - name: log_credentials_in_response
+    priority: 90
+    action: LOG
+    conditions:
+      - field: contains_credentials
+        match_type: boolean
+        value: true
