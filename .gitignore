@@ -29,3 +29,8 @@ Thumbs.db
 # Scratch / temp notebooks and files
 notebooks/Untitled*.ipynb
 notebooks/temp_*.md
+
+# Lobster Trap runtime artifacts (binary + live audit log)
+lobstertrap/lobstertrap.exe
+lobstertrap/lobstertrap
+lobstertrap/audit.jsonl

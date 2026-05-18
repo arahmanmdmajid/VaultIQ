@@ -38,7 +38,7 @@ ROOT               = Path(__file__).parent
 # Lobster Trap — AI governance reverse proxy (https://github.com/veeainc/lobstertrap)
 # When running, all Groq calls are routed through it for PII detection, firewall rules,
 # rate limiting, and audit logging. Falls back to direct Groq if not reachable.
-LOBSTERTRAP_URL   = os.getenv("LOBSTERTRAP_URL", "http://localhost:8080/v1")
+LOBSTERTRAP_URL   = os.getenv("LOBSTERTRAP_URL", "http://localhost:8080/openai/v1")
 LOBSTERTRAP_AUDIT = ROOT / "lobstertrap" / "audit.jsonl"
 
 DEMO_DOCS = {
