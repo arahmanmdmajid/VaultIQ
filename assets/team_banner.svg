@@ -1,0 +1,240 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+
+    <!-- Background: deep dark navy radial glow -->
+    <radialGradient id="bgGlow" cx="50%" cy="38%" r="55%">
+      <stop offset="0%"   style="stop-color:#0c2540"/>
+      <stop offset="100%" style="stop-color:#030810"/>
+    </radialGradient>
+
+    <!-- Title gradient: white top → ice-blue bottom -->
+    <linearGradient id="titleGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   style="stop-color:#ffffff"/>
+      <stop offset="100%" style="stop-color:#9dd8f0"/>
+    </linearGradient>
+
+    <!-- Cyan → green gradient (separator, borders) -->
+    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%"   style="stop-color:#00c8ff;stop-opacity:0"/>
+      <stop offset="25%"  style="stop-color:#00c8ff"/>
+      <stop offset="75%"  style="stop-color:#00ff88"/>
+      <stop offset="100%" style="stop-color:#00ff88;stop-opacity:0"/>
+    </linearGradient>
+
+    <!-- Vignette: left edge -->
+    <linearGradient id="vigL" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%"   style="stop-color:#030810;stop-opacity:0.9"/>
+      <stop offset="100%" style="stop-color:#030810;stop-opacity:0"/>
+    </linearGradient>
+
+    <!-- Vignette: right edge -->
+    <linearGradient id="vigR" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%"   style="stop-color:#030810;stop-opacity:0"/>
+      <stop offset="100%" style="stop-color:#030810;stop-opacity:0.9"/>
+    </linearGradient>
+
+    <!-- Glow for network lines / hex edges -->
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <!-- Stronger glow for nodes -->
+    <filter id="nodeGlow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <!-- Text glow (title) -->
+    <filter id="textGlow" x="-5%" y="-40%" width="110%" height="180%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="9" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <!-- Shield / inner icon glow -->
+    <filter id="shieldGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <!-- Subtle dot-grid tile -->
+    <pattern id="dotGrid" x="0" y="0" width="40" height="40" patternUnits="userSpaceOnUse">
+      <circle cx="20" cy="20" r="0.9" fill="#1e4a6a" opacity="0.55"/>
+    </pattern>
+
+  </defs>
+
+  <!-- ═══════════════════ BACKGROUND ═══════════════════ -->
+  <rect width="1200" height="630" fill="url(#bgGlow)"/>
+  <rect width="1200" height="630" fill="url(#dotGrid)"/>
+
+  <!-- Edge vignettes -->
+  <rect x="0"    y="0" width="160" height="630" fill="url(#vigL)"/>
+  <rect x="1040" y="0" width="160" height="630" fill="url(#vigR)"/>
+
+  <!-- Ambient scan-line (very subtle horizontal band) -->
+  <rect x="0" y="170" width="1200" height="180" fill="#00c8ff" opacity="0.018"/>
+
+  <!-- ═══════════════════ BACKGROUND PARTICLES ═══════════════════ -->
+  <g opacity="0.4" fill="#00c8ff">
+    <circle cx="100"  cy="75"  r="1.5"/>
+    <circle cx="170"  cy="210" r="1"/>
+    <circle cx="85"   cy="380" r="2"/>
+    <circle cx="210"  cy="510" r="1.5"/>
+    <circle cx="155"  cy="590" r="1"/>
+    <circle cx="330"  cy="45"  r="1.5"/>
+    <circle cx="870"  cy="38"  r="1.5"/>
+    <circle cx="960"  cy="592" r="1"/>
+    <circle cx="260"  cy="592" r="2"/>
+    <circle cx="410"  cy="610" r="1"/>
+    <circle cx="795"  cy="610" r="1.5"/>
+  </g>
+  <g opacity="0.35" fill="#00ff88">
+    <circle cx="1070" cy="95"  r="1.5"/>
+    <circle cx="1120" cy="290" r="2"/>
+    <circle cx="1035" cy="440" r="1.5"/>
+    <circle cx="1090" cy="560" r="1"/>
+    <circle cx="210"  cy="500" r="1.5"/>
+  </g>
+
+  <!-- ═══════════════════ NETWORK EMBLEM (center of upper half) ═══════════════════ -->
+  <!--
+    Central hex: cx=600, cy=215, r=90  (pointy-top)
+      Vertices:
+        Top        (90°):  (600, 125)
+        Top-Right  (30°):  (677.9, 170)
+        Bot-Right (-30°):  (677.9, 260)
+        Bottom    (-90°):  (600, 305)
+        Bot-Left (210°):   (522.1, 260)
+        Top-Left (150°):   (522.1, 170)
+
+    Satellite nodes at radius 155 from center:
+        Top        (90°):  (600,  60)
+        Top-Right  (30°):  (734.2, 137.5)
+        Bot-Right (-30°):  (734.2, 292.5)
+        Bottom    (-90°):  (600,  370)
+        Bot-Left (210°):   (465.8, 292.5)
+        Top-Left (150°):   (465.8, 137.5)
+  -->
+
+  <!-- Outer orbit ring (dashed) -->
+  <circle cx="600" cy="215" r="155" fill="none" stroke="#0d5a75"
+          stroke-width="1" stroke-dasharray="5,10" opacity="0.45"/>
+
+  <!-- Outer hexagon connecting all 6 satellite nodes -->
+  <polygon points="600,60 734.2,137.5 734.2,292.5 600,370 465.8,292.5 465.8,137.5"
+           fill="none" stroke="#00c8ff" stroke-width="1" opacity="0.2"/>
+
+  <!-- Spokes: central-hex vertex → satellite node -->
+  <line x1="600"   y1="125" x2="600"   y2="60"    stroke="#00c8ff" stroke-width="1.5" opacity="0.5" filter="url(#glow)"/>
+  <line x1="677.9" y1="170" x2="734.2" y2="137.5" stroke="#00c8ff" stroke-width="1.5" opacity="0.5" filter="url(#glow)"/>
+  <line x1="677.9" y1="260" x2="734.2" y2="292.5" stroke="#00c8ff" stroke-width="1.5" opacity="0.5" filter="url(#glow)"/>
+  <line x1="600"   y1="305" x2="600"   y2="370"   stroke="#00c8ff" stroke-width="1.5" opacity="0.5" filter="url(#glow)"/>
+  <line x1="522.1" y1="260" x2="465.8" y2="292.5" stroke="#00c8ff" stroke-width="1.5" opacity="0.5" filter="url(#glow)"/>
+  <line x1="522.1" y1="170" x2="465.8" y2="137.5" stroke="#00c8ff" stroke-width="1.5" opacity="0.5" filter="url(#glow)"/>
+
+  <!-- Satellite nodes: halo + bright core -->
+  <circle cx="600"   cy="60"    r="13" fill="#00c8ff" opacity="0.12"/>
+  <circle cx="600"   cy="60"    r="6"  fill="#00c8ff" opacity="0.95" filter="url(#nodeGlow)"/>
+
+  <circle cx="734.2" cy="137.5" r="13" fill="#00c8ff" opacity="0.12"/>
+  <circle cx="734.2" cy="137.5" r="6"  fill="#00c8ff" opacity="0.95" filter="url(#nodeGlow)"/>
+
+  <circle cx="734.2" cy="292.5" r="13" fill="#00ff88" opacity="0.12"/>
+  <circle cx="734.2" cy="292.5" r="6"  fill="#00ff88" opacity="0.95" filter="url(#nodeGlow)"/>
+
+  <circle cx="600"   cy="370"   r="13" fill="#00c8ff" opacity="0.12"/>
+  <circle cx="600"   cy="370"   r="6"  fill="#00c8ff" opacity="0.95" filter="url(#nodeGlow)"/>
+
+  <circle cx="465.8" cy="292.5" r="13" fill="#00ff88" opacity="0.12"/>
+  <circle cx="465.8" cy="292.5" r="6"  fill="#00ff88" opacity="0.95" filter="url(#nodeGlow)"/>
+
+  <circle cx="465.8" cy="137.5" r="13" fill="#00c8ff" opacity="0.12"/>
+  <circle cx="465.8" cy="137.5" r="6"  fill="#00c8ff" opacity="0.95" filter="url(#nodeGlow)"/>
+
+  <!-- Central hexagon outer ring -->
+  <polygon points="600,125 677.9,170 677.9,260 600,305 522.1,260 522.1,170"
+           fill="rgba(0,200,255,0.04)" stroke="#00c8ff" stroke-width="2.5"
+           opacity="0.85" filter="url(#glow)"/>
+
+  <!-- Central hexagon inner ring -->
+  <!--  r=55: top=(600,160), tr=(647.6,187.5), br=(647.6,242.5), bot=(600,270), bl=(552.4,242.5), tl=(552.4,187.5) -->
+  <polygon points="600,160 647.6,187.5 647.6,242.5 600,270 552.4,242.5 552.4,187.5"
+           fill="rgba(3,12,30,0.92)" stroke="#00c8ff" stroke-width="1.5" opacity="0.95"/>
+
+  <!-- Shield inside inner hex -->
+  <path d="M 600 178  L 626 190  L 626 222  Q 626 246 600 257
+           Q 574 246 574 222  L 574 190  Z"
+        fill="rgba(0,255,136,0.07)" stroke="#00ff88" stroke-width="2"
+        filter="url(#shieldGlow)" opacity="0.95"/>
+
+  <!-- Bold W mark inside shield -->
+  <text x="600" y="235"
+        font-family="'Arial Black', Impact, Arial" font-size="32" font-weight="900"
+        fill="#00ff88" text-anchor="middle" filter="url(#shieldGlow)" opacity="0.95">W</text>
+
+  <!-- Centre dot (nexus point) -->
+  <circle cx="600" cy="215" r="3" fill="#00c8ff" opacity="0.7" filter="url(#glow)"/>
+
+  <!-- ═══════════════════ TYPOGRAPHY ═══════════════════ -->
+
+  <!-- Main title -->
+  <text x="600" y="438"
+        font-family="'Trebuchet MS', 'Arial Black', Arial, sans-serif"
+        font-size="74" font-weight="700" letter-spacing="16"
+        fill="url(#titleGrad)" text-anchor="middle"
+        filter="url(#textGlow)">NEXUS WARDEN</text>
+
+  <!-- Separator line -->
+  <rect x="280" y="452" width="640" height="1.5" fill="url(#cyanGrad)" opacity="0.85"/>
+
+  <!-- Primary tagline -->
+  <text x="600" y="482"
+        font-family="'Trebuchet MS', Arial, sans-serif"
+        font-size="17" font-weight="400" letter-spacing="5"
+        fill="#00c8ff" text-anchor="middle" opacity="0.9">
+    GOVERNED DOCUMENT INTELLIGENCE
+  </text>
+
+  <!-- Secondary tagline -->
+  <text x="600" y="508"
+        font-family="'Trebuchet MS', Arial, sans-serif"
+        font-size="13" font-weight="400" letter-spacing="2"
+        fill="#4a8aaa" text-anchor="middle" opacity="0.75">
+    Connecting intelligence to action  ·  With governance at every layer
+  </text>
+
+  <!-- ═══════════════════ BOTTOM BADGES ═══════════════════ -->
+
+  <!-- VaultIQ badge -->
+  <rect x="418" y="532" width="130" height="30" rx="5"
+        fill="rgba(13,100,140,0.30)" stroke="#0d7494" stroke-width="1"/>
+  <text x="483" y="552"
+        font-family="'Trebuchet MS', Arial, sans-serif"
+        font-size="13" font-weight="600" letter-spacing="2"
+        fill="#00c8ff" text-anchor="middle">VaultIQ</text>
+
+  <!-- Dot separator -->
+  <circle cx="602" cy="547" r="2" fill="#2a6070" opacity="0.8"/>
+
+  <!-- TechEx badge -->
+  <rect x="618" y="532" width="178" height="30" rx="5"
+        fill="rgba(13,60,80,0.25)" stroke="#0d4a60" stroke-width="1"/>
+  <text x="707" y="552"
+        font-family="'Trebuchet MS', Arial, sans-serif"
+        font-size="12" font-weight="400" letter-spacing="1"
+        fill="#4a8aaa" text-anchor="middle">TechEx Hackathon 2025</text>
+
+  <!-- ═══════════════════ FRAME ACCENTS ═══════════════════ -->
+
+  <!-- Top and bottom accent bars -->
+  <rect x="0" y="0"   width="1200" height="3" fill="url(#cyanGrad)" opacity="0.7"/>
+  <rect x="0" y="627" width="1200" height="3" fill="url(#cyanGrad)" opacity="0.7"/>
+
+  <!-- Corner L-brackets -->
+  <path d="M 0 44 L 0 0 L 44 0"     fill="none" stroke="#00c8ff" stroke-width="1.5" opacity="0.55"/>
+  <path d="M 1156 0 L 1200 0 L 1200 44"  fill="none" stroke="#00c8ff" stroke-width="1.5" opacity="0.55"/>
+  <path d="M 0 586 L 0 630 L 44 630" fill="none" stroke="#00c8ff" stroke-width="1.5" opacity="0.55"/>
+  <path d="M 1156 630 L 1200 630 L 1200 586" fill="none" stroke="#00c8ff" stroke-width="1.5" opacity="0.55"/>
+
+</svg>
