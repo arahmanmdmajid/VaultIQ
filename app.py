@@ -231,12 +231,10 @@ def wait_for_indexing(doc_id: str, timeout: int = 180) -> bool:
 
 
 def _active_pi_key() -> str:
-    """Return the PageIndex API key to use: user-supplied key takes priority."""
-    return (
-        st.session_state.get("user_pi_key")
-        or os.getenv("PAGEINDEX_API_KEY")
-        or ""
-    )
+    """Return the PageIndex API key to use, respecting the sidebar toggle."""
+    if st.session_state.get("use_custom_pi_key"):
+        return st.session_state.get("user_pi_key") or ""
+    return os.getenv("PAGEINDEX_API_KEY") or ""
 
 
 def retrieve_pages(doc_id: str, question: str) -> tuple[list[int], dict, float]:
@@ -654,24 +652,38 @@ with st.sidebar:
 
     # PageIndex API key — lets users supply their own key if the app quota is exhausted
     with st.expander("🔑 PageIndex API key"):
-        key_input = st.text_input(
-            "Your PageIndex key",
-            value=st.session_state.get("user_pi_key", ""),
-            type="password",
-            placeholder="pi-…",
+        has_default = bool(os.getenv("PAGEINDEX_API_KEY"))
+        mode = st.radio(
+            "Key source",
+            options=["Default", "Custom"],
+            index=1 if st.session_state.get("use_custom_pi_key") else 0,
+            horizontal=True,
             label_visibility="collapsed",
-            help="Used only for PageIndex retrieval calls this session. Never stored.",
         )
-        if key_input != st.session_state.get("user_pi_key", ""):
-            st.session_state["user_pi_key"] = key_input.strip() or None
-            st.rerun()
+        st.session_state["use_custom_pi_key"] = (mode == "Custom")
 
-        if st.session_state.get("user_pi_key"):
-            st.success("✓ Custom key active", icon="🔑")
-        elif os.getenv("PAGEINDEX_API_KEY"):
-            st.caption("Using app-level key.")
+        if mode == "Custom":
+            key_input = st.text_input(
+                "Your PageIndex key",
+                value=st.session_state.get("user_pi_key", ""),
+                type="password",
+                placeholder="pi-…",
+                label_visibility="collapsed",
+                help="Used only for PageIndex calls this session. Never stored.",
+            )
+            entered = key_input.strip() or None
+            if entered != st.session_state.get("user_pi_key"):
+                st.session_state["user_pi_key"] = entered
+                st.rerun()
+            if st.session_state.get("user_pi_key"):
+                st.success("✓ Custom key active", icon="🔑")
+            else:
+                st.caption("Enter your key above.")
         else:
-            st.warning("No PageIndex key — fallback retrieval active.", icon="⚠️")
+            if has_default:
+                st.success("✓ App-level key active", icon="🔒")
+            else:
+                st.warning("No default key — fallback retrieval active.", icon="⚠️")
 
     st.divider()
     st.caption("**Stack**")
