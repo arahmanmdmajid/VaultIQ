@@ -58,13 +58,16 @@ ingress_rules:
         value: true
 
   # 4. Escalate high-risk queries for human review rather than silently blocking.
+  #    Threshold lowered to 0.35 — catches borderline requests (e.g. code-gen
+  #    prompts) that the intent classifier scores as data_access but with an
+  #    elevated risk score rather than a clean code_execution intent label.
   - name: flag_high_risk_queries
     priority: 70
     action: HUMAN_REVIEW
     conditions:
       - field: risk_score
         match_type: threshold
-        value: 0.75
+        value: 0.35
 
   # 5. Log any query that contains URLs (unusual for a doc-query use-case).
   - name: log_queries_with_urls
