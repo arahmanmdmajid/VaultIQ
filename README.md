@@ -18,17 +18,6 @@ This approach handles Arabic typography, tables, charts, and mixed layouts signi
 
 ---
 
-## Results
-
-| Pipeline | Approach | Effective Score |
-|---|---|---|
-| Spike 05 — Text RAG | PageIndex text index + Groq Llama 3.3 (text) | 81% |
-| **Spike 06 — Vision RAG** | **PageIndex visual reasoning + Groq Llama 4 Scout (vision)** | **93% (+12%)** |
-
-**Vision RAG is the adopted primary pipeline.**
-
----
-
 ## Architecture
 
 ```
@@ -56,13 +45,6 @@ mda-urban-intelligence/
 │   ├── policy.yaml                       # AI governance policy (ingress + egress rules)
 │   ├── start.bat                         # Windows: start the proxy
 │   └── start.sh                          # macOS/Linux: start the proxy
-├── notebooks/
-│   ├── spike_01_pdf_extraction.ipynb     # PDF → page PNGs (PyMuPDF)
-│   ├── spike_02_arabic_ocr.ipynb         # Arabic OCR via Gemini Vision
-│   ├── spike_03_english_ocr.ipynb        # English OCR via Chandra
-│   ├── spike_04_pageindex.ipynb          # Structural indexing via PageIndex
-│   ├── spike_05_retrieval.ipynb          # Text RAG pipeline — 81% effective score
-│   └── spike_06_vision_rag.ipynb         # Vision RAG pipeline — 93% effective score
 ├── data/
 │   ├── tranquil_en_subset.pdf            # 14-page EN subset (pre-indexed demo doc)
 │   ├── tranquil_ar_subset.pdf            # 14-page AR subset (pre-indexed demo doc)
@@ -207,26 +189,6 @@ Rate limits: **30 req/min · 200 req/hr · burst 10**
 ### Why it matters
 
 We are building a RAG system over Saudi government urban development reports. Enterprise judges care about audit trails, PII protection, and access control — not just answer quality. Lobster Trap provides all of that as a single binary on top of the finished pipeline.
-
----
-
-## Notebooks (Research Spikes)
-
-To reproduce the research pipeline from scratch:
-
-```bash
-python -m ipykernel install --user --name=mda-urban-intelligence --display-name "MDA Urban Intelligence"
-jupyter notebook
-```
-
-Run spikes in order: `spike_01 → spike_02 → spike_03 → spike_04 → spike_05 → spike_06`
-
-> **Tip:** Spikes 01–03 generate page images and OCR outputs. To jump straight to the Vision RAG results, run only Spike 01 (page images) and Spike 06 (vision pipeline).
-
-**Free-tier notes:**
-- **PageIndex** — 14-page subsets used to stay within upload limits
-- **Groq / Llama 4 Scout** — max 5 images per request, 4 MB per image
-- **Gemini** — only used in Spike 02 for Arabic OCR; has daily RPD limits
 
 ---
 
