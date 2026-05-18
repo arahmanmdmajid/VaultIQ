@@ -8,9 +8,11 @@ Built for the **[TechEx Intelligent Enterprise Solutions Hackathon](https://labl
 
 > **POC:** Arabic/English querying over the Madinah Tranquil Livable City 2024 report.
 
+---
+
 ## What It Does
 
-Answers natural-language questions about Madinah's urban development in both Arabic and English, grounded in the official 2024 report. The pipeline uses **Vision RAG** — rather than relying on OCR text extraction, it identifies the most relevant report pages visually and feeds those raw page images directly to a vision LLM.
+Answers natural-language questions about uploaded documents in **Arabic and English**, with every answer grounded in the specific source pages. The pipeline uses **Vision RAG** — rather than relying on OCR text extraction, it identifies the most relevant report pages visually and feeds those raw page images directly to a vision LLM.
 
 This approach handles Arabic typography, tables, charts, and mixed layouts significantly better than text-based approaches.
 
@@ -20,8 +22,8 @@ This approach handles Arabic typography, tables, charts, and mixed layouts signi
 
 | Pipeline | Approach | Effective Score |
 |---|---|---|
-| Spike 05 — Text RAG | PageIndex `/markdown` + Groq Llama 3.3 (text) | 81% |
-| **Spike 06 — Vision RAG** | **PageIndex `/doc` + Groq Llama 4 Scout (vision)** | **93% (+12%)** |
+| Spike 05 — Text RAG | PageIndex text index + Groq Llama 3.3 (text) | 81% |
+| **Spike 06 — Vision RAG** | **PageIndex visual reasoning + Groq Llama 4 Scout (vision)** | **93% (+12%)** |
 
 **Vision RAG is the adopted primary pipeline.**
 
@@ -30,16 +32,17 @@ This approach handles Arabic typography, tables, charts, and mixed layouts signi
 ## Architecture
 
 ```
-PDF file
-  └─▶ PageIndex submit_document()       ← builds visual reasoning graph
-         └─▶ doc_id
-               └─▶ submit_query(doc_id, question)
-                     └─▶ get_retrieval()
-                           └─▶ relevant page numbers
-                                 └─▶ load + compress PNG → JPEG
-                                       └─▶ base64 encode (up to 5 pages)
-                                             └─▶ Llama 4 Scout via Groq
-                                                   └─▶ grounded answer
+User Question
+  └─▶ Streamlit app
+        └─▶ Lobster Trap (:8080)          ← AI governance proxy
+              │   ├─ Ingress rules (DENY / HUMAN_REVIEW / LOG)
+              │   ├─ Rate limiting
+              │   └─ Audit log (audit.jsonl)
+              └─▶ PageIndex Chat API       ← visual reasoning graph
+                    └─▶ page citations (<doc=...;page=N>)
+                          └─▶ PyMuPDF render → JPEG (up to 5 pages)
+                                └─▶ Groq Llama 4 Scout (vision)
+                                      └─▶ grounded answer with page citations
 ```
 
 ---
@@ -48,39 +51,36 @@ PDF file
 
 ```
 mda-urban-intelligence/
+├── app.py                                # Streamlit chat app (main entry point)
+├── lobstertrap/
+│   ├── policy.yaml                       # AI governance policy (ingress + egress rules)
+│   ├── start.bat                         # Windows: start the proxy
+│   └── start.sh                          # macOS/Linux: start the proxy
 ├── notebooks/
-│   ├── spike_01_pdf_extraction.ipynb   # PDF → page PNGs (PyMuPDF)
-│   ├── spike_02_arabic_ocr.ipynb       # Arabic OCR via Gemini Vision
-│   ├── spike_03_english_ocr.ipynb      # English OCR via Chandra
-│   ├── spike_04_pageindex.ipynb        # Structural indexing via PageIndex /markdown
-│   ├── spike_05_retrieval.ipynb        # Text RAG pipeline — 81% effective score
-│   └── spike_06_vision_rag.ipynb       # Vision RAG pipeline — 93% effective score
+│   ├── spike_01_pdf_extraction.ipynb     # PDF → page PNGs (PyMuPDF)
+│   ├── spike_02_arabic_ocr.ipynb         # Arabic OCR via Gemini Vision
+│   ├── spike_03_english_ocr.ipynb        # English OCR via Chandra
+│   ├── spike_04_pageindex.ipynb          # Structural indexing via PageIndex
+│   ├── spike_05_retrieval.ipynb          # Text RAG pipeline — 81% effective score
+│   └── spike_06_vision_rag.ipynb         # Vision RAG pipeline — 93% effective score
 ├── data/
-│   ├── pdfs/                           # Full PDFs (not committed — too large)
-│   ├── images_en/                      # Full EN page PNGs (not committed)
-│   ├── images_ar/                      # Full AR page PNGs (not committed)
-│   ├── images_en_subset/               # 14 sampled EN page PNGs
-│   ├── images_ar_subset/               # 14 sampled AR page PNGs
-│   ├── tranquil_en_subset.pdf          # 14-page EN subset used for spiking
-│   ├── tranquil_ar_subset.pdf          # 14-page AR subset used for spiking
-│   ├── pageindex_structures.json       # Cached PageIndex /markdown structures
-│   └── vision_doc_ids.json             # Cached PageIndex /doc doc_ids
-├── ocr_output/
-│   ├── english/                        # Per-page English OCR markdown files
-│   └── arabic/                         # Per-page Arabic OCR markdown files
-├── .env.example                        # Required environment variables
+│   ├── tranquil_en_subset.pdf            # 14-page EN subset (pre-indexed demo doc)
+│   ├── tranquil_ar_subset.pdf            # 14-page AR subset (pre-indexed demo doc)
+│   ├── vision_doc_ids.json               # Cached PageIndex doc_ids for demo docs
+│   └── pageindex_structures.json         # Cached PageIndex markdown structures
+├── .env.example                          # Required environment variables
 ├── requirements.txt
 └── README.md
 ```
 
 ---
 
-## Reproducibility
+## Running the App
 
 ### Prerequisites
 
 - Python 3.10+
-- The full EN and AR report PDFs placed at `data/pdfs/tranquil_en.pdf` and `data/pdfs/tranquil_ar.pdf`
+- Go 1.22+ (only needed to build the Lobster Trap binary — see below)
 
 ### 1. Clone and set up the environment
 
@@ -95,12 +95,9 @@ venv\Scripts\activate
 source venv/bin/activate
 
 pip install -r requirements.txt
-pip install groq pillow
 ```
 
 ### 2. Configure API keys
-
-Copy `.env.example` to `.env` and fill in your keys:
 
 ```bash
 cp .env.example .env
@@ -109,7 +106,7 @@ cp .env.example .env
 ```env
 PAGEINDEX_API_KEY=your_pageindex_key
 GROQ_API_KEY=your_groq_key
-GEMINI_API_KEY=your_gemini_key        # needed for Spike 02 (Arabic OCR)
+GEMINI_API_KEY=your_gemini_key    # only needed for Spike 02 (Arabic OCR)
 ```
 
 | Key | Where to get it |
@@ -118,66 +115,118 @@ GEMINI_API_KEY=your_gemini_key        # needed for Spike 02 (Arabic OCR)
 | `GROQ_API_KEY` | https://console.groq.com |
 | `GEMINI_API_KEY` | https://aistudio.google.com |
 
-### 3. Register the Jupyter kernel
+### 3. (Optional) Start Lobster Trap
+
+Lobster Trap is the AI governance proxy. The app works without it (falls back to direct Groq calls), but the governance features — PII detection, firewall rules, rate limiting, and audit logging — are only active when it is running.
+
+**Build from source (one-time):**
 
 ```bash
-python -m ipykernel install --user --name=mda-urban-intelligence --display-name "MDA Urban Intelligence"
+git clone https://github.com/veeainc/lobstertrap /tmp/lt
+cd /tmp/lt
+
+# Windows:
+make build-windows
+copy lobstertrap.exe path\to\mda-urban-intelligence\lobstertrap\
+
+# macOS/Linux:
+make build
+cp lobstertrap path/to/mda-urban-intelligence/lobstertrap/
 ```
 
-### 4. Run the spikes in order
+**Start the proxy:**
 
-Open Jupyter and run each notebook top-to-bottom:
+```bash
+# Windows:
+lobstertrap\start.bat
 
+# macOS/Linux:
+lobstertrap/start.sh
 ```
-spike_01 → spike_02 → spike_03 → spike_04 → spike_05 → spike_06
+
+The proxy starts on `http://localhost:8080` with the policy in `lobstertrap/policy.yaml`.
+
+### 4. Run the Streamlit app
+
+```bash
+streamlit run app.py
 ```
 
-> **Tip:** Spikes 01–03 generate the page images and OCR outputs. If you only want to run the Vision RAG pipeline (Spike 06), you can skip Spikes 02–03 as they are only needed for the text baseline (Spike 05).
+Open `http://localhost:8501`. The app auto-detects whether Lobster Trap is running and shows a **🛡️ Governed** or **⚪ Direct API** badge accordingly.
 
-### 5. Free-tier notes
-
-- **PageIndex**: Subset PDFs are used (14 sampled pages) to stay within upload limits
-- **Groq / Llama 4 Scout**: Max 5 images per request, 4 MB per image
-- **Gemini**: Only used in Spike 02 for Arabic OCR — has daily RPD limits
+A pre-indexed demo document is loaded on startup — just start asking questions.
 
 ---
 
-## Planned Features (Submission Scope)
+## App Features
 
-- [ ] **Chat interface** — a web UI (Streamlit or Gradio) where users upload a document, type questions in Arabic or English, and receive grounded answers with page image citations
-- [ ] **AI Governance layer (Lobster Trap)** — see below
+- **Bilingual chat** — ask in Arabic or English; language is auto-detected
+- **Pre-loaded demo doc** — Madinah Tranquil Livable City 2024 report, both EN and AR, ready to query with no upload needed
+- **Page image citations** — every answer shows thumbnail previews of the source pages with a click-to-expand lightbox
+- **Document upload** — upload your own PDF; it will be indexed by PageIndex and ready to query in ~30s
+- **Fallback retrieval** — if PageIndex is unavailable (quota), local text extraction via PyMuPDF keeps the app functional
+- **Developer Dashboard** — pipeline timings, raw PageIndex JSON, Vision RAG debug info, and the live governance audit log
+- **Governance denial cards** — when Lobster Trap blocks a query, a styled red card shows the policy message in the chat
 
 ---
 
 ## AI Governance — Lobster Trap
 
-> **Lobster Trap** is a tool from one of the hackathon's sponsors and will be integrated as a governance wrapper around the completed pipeline before the demo.
-
 **Repo:** [github.com/veeainc/lobstertrap](https://github.com/veeainc/lobstertrap)
 
-Lobster Trap is an open-source Go-based reverse proxy that sits between the application and any LLM backend (Groq, Gemini, Ollama, or any OpenAI-compatible API). It adds a security and governance layer with zero code changes to the existing app.
+Lobster Trap is an open-source Go-based reverse proxy that sits between the application and any OpenAI-compatible LLM backend. It inspects every prompt and response and enforces a declarative YAML policy with zero changes to application code.
 
 ```
-User Query → Lobster Trap (:8080) → Groq / Llama 4 Scout → Answer
+Streamlit app → Lobster Trap (:8080) → Groq API
 ```
 
-It inspects every prompt and response in sub-millisecond time using regex-based Deep Packet Inspection — no additional LLM calls needed for the inspection itself.
+### Active Policy (`lobstertrap/policy.yaml`)
 
-**Key features:**
+| Priority | Rule | Action | Condition |
+|---|---|---|---|
+| 100 | `block_prompt_injection` | **DENY** | Injection patterns detected |
+| 90 | `block_code_execution_intent` | **DENY** | Intent = `code_execution` |
+| 89 | `block_system_command_intent` | **DENY** | Intent = `system` |
+| 85 | `flag_high_risk_queries` | **HUMAN_REVIEW** | Risk score > 0.35 |
+| 80 | `log_pii_in_query` | LOG | PII detected in prompt |
+| 60 | `log_queries_with_urls` | LOG | URLs detected in prompt |
+| — | `log_pii_in_response` | LOG (egress) | PII detected in response |
+| — | `log_credentials_in_response` | LOG (egress) | Credentials detected in response |
 
-| Feature | Description |
+Rate limits: **30 req/min · 200 req/hr · burst 10**
+
+### Tested Governance Behaviours
+
+| Query type | Result |
 |---|---|
-| PII detection | Flags SSNs, credit cards, phone numbers, official names |
-| Firewall rules | iptables-style policies: ALLOW / DENY / LOG / QUARANTINE / HUMAN_REVIEW |
-| Intent classification | Detects code execution attempts, file I/O, network access requests |
-| Rate limiting | Requests-per-minute and burst thresholds |
-| Audit logging | Full JSON log of every decision for compliance trails |
+| Normal question about the document | ✅ Passes through, logged |
+| `Ignore all previous instructions…` | 🛑 DENY — injection blocked |
+| `Write a Python script to delete files…` | ⚠️ HUMAN_REVIEW flagged (risk 0.36) |
+| Query containing PII | 📋 LOG — passes through with audit entry |
 
-**Why it matters for this project:**
+### Why it matters
 
-We are building a RAG system over Saudi government urban development reports. Enterprise judges care about audit trails, PII protection, and access control — not just answer quality. Lobster Trap provides all of that as a single binary added on top of the finished pipeline.
+We are building a RAG system over Saudi government urban development reports. Enterprise judges care about audit trails, PII protection, and access control — not just answer quality. Lobster Trap provides all of that as a single binary on top of the finished pipeline.
 
-**Integration plan:** Add after all spikes pass, as a governance wrapper around the complete pipeline before the demo.
+---
+
+## Notebooks (Research Spikes)
+
+To reproduce the research pipeline from scratch:
+
+```bash
+python -m ipykernel install --user --name=mda-urban-intelligence --display-name "MDA Urban Intelligence"
+jupyter notebook
+```
+
+Run spikes in order: `spike_01 → spike_02 → spike_03 → spike_04 → spike_05 → spike_06`
+
+> **Tip:** Spikes 01–03 generate page images and OCR outputs. To jump straight to the Vision RAG results, run only Spike 01 (page images) and Spike 06 (vision pipeline).
+
+**Free-tier notes:**
+- **PageIndex** — 14-page subsets used to stay within upload limits
+- **Groq / Llama 4 Scout** — max 5 images per request, 4 MB per image
+- **Gemini** — only used in Spike 02 for Arabic OCR; has daily RPD limits
 
 ---
 
@@ -190,15 +239,15 @@ Built for the **TechEx Intelligent Enterprise Solutions Hackathon** on [lablab.a
 ## Submission Copy
 
 ### Short Description
-> VaultIQ is a multilingual Visual RAG platform that lets enterprises query image-based documents in any language — with grounded, page-cited answers and a built-in AI governance layer for full auditability.
+> VaultIQ is a multilingual Visual RAG platform that lets enterprises query image-based documents in Arabic or English — with grounded, page-cited answers and a built-in AI governance layer for full auditability.
 
 ### Long Description
 > Enterprises sit on vast archives of image-based documents — scanned reports, government publications, multilingual PDFs — that are impossible to query at scale. Existing tools either require clean text or work in a single language. Neither assumption holds in the real world.
 >
-> VaultIQ solves this with a Visual RAG pipeline: instead of extracting and indexing text, it uses **PageIndex** to build a visual reasoning graph directly from the PDF pages. When a user asks a question, PageIndex identifies which pages are relevant — then **Llama 4 Scout (via Groq)** reads those raw page images and generates a grounded answer with explicit page citations. No OCR errors. No layout destruction. Tables, charts, and non-Latin scripts are all handled natively.
+> VaultIQ solves this with a Visual RAG pipeline: instead of extracting and indexing text, it uses **PageIndex** to build a visual reasoning graph directly from the PDF pages. When a user asks a question, PageIndex identifies which pages are relevant — then **Llama 4 Scout (via Groq)** reads those raw page images and generates a grounded answer with explicit page citations. No OCR errors. No layout destruction. Tables, charts, and Arabic typography are all handled natively.
 >
-> On top of the RAG pipeline, **Lobster Trap** acts as a governance proxy — sitting between the application and the LLM backend to enforce PII detection, firewall rules, rate limiting, and full JSON audit logging with zero code changes. Every query in, every answer out — logged, inspectable, compliant.
+> On top of the RAG pipeline, **Lobster Trap** acts as a governance proxy — sitting between the application and the LLM backend to enforce PII detection, firewall rules, rate limiting, and full JSON audit logging. Prompt injection attempts are blocked outright. High-risk queries are flagged for human review. Every interaction is logged. Enterprise-grade auditability, out of the box.
 >
-> **POC:** Arabic and English querying over the Madinah Tranquil Livable City 2024 report, achieving **93% answer accuracy** compared to 81% for a text-based baseline — a +12 percentage point improvement driven entirely by reading the pages visually.
+> **POC:** Arabic and English querying over the Madinah Tranquil Livable City 2024 report, achieving **93% answer accuracy** vs. 81% for a text-based baseline — a +12 percentage point improvement driven entirely by reading the pages visually.
 >
 > **Stack:** PageIndex · Groq (Llama 4 Scout) · Lobster Trap · Streamlit · Python
