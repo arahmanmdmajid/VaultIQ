@@ -94,25 +94,39 @@ def wait_for_indexing(doc_id: str, timeout: int = 180) -> bool:
     return False
 
 
-def retrieve_pages(doc_id: str, question: str, poll_timeout: int = 60) -> list[int]:
-    """Ask PageIndex which pages are relevant. Returns sorted list of 1-based page numbers."""
+def retrieve_pages(doc_id: str, question: str, poll_timeout: int = 60) -> tuple[list[int], dict]:
+    """
+    Ask PageIndex which pages are relevant.
+    Returns (sorted list of 1-based page numbers, raw retrieval result for debugging).
+    """
     submit = pi_client.submit_query(doc_id=doc_id, query=question)
     rid    = submit.get("retrieval_id") or submit.get("id") or submit.get("query_id")
     if not rid:
-        return []
+        return [], {"error": "No retrieval_id in submit response", "submit_response": submit}
     for _ in range(poll_timeout):
         result = pi_client.get_retrieval(rid)
         if result.get("status") == "completed" or result.get("retrieved_nodes"):
-            return _parse_page_numbers(result)
+            return _parse_page_numbers(result), result
         if result.get("status") == "failed":
-            return []
+            return [], result
         time.sleep(1)
-    return []
+    return [], {"error": "Poll timeout", "last_result": result}
 
 
 def _parse_page_numbers(retrieval_result: dict) -> list[int]:
+    """
+    Extract page numbers from a PageIndex retrieval result.
+
+    Tries two strategies in order:
+    1. physical_index field inside relevant_contents items
+       e.g. "<physical_index_3>" → page 3
+    2. page_index field directly on each retrieved node
+       e.g. node["page_index"] = 3 → page 3
+    """
     pages = set()
+
     for node in retrieval_result.get("retrieved_nodes", []):
+        # Strategy 1: physical_index inside relevant_contents
         for group in node.get("relevant_contents", []):
             items = group if isinstance(group, list) else [group]
             for item in items:
@@ -122,6 +136,17 @@ def _parse_page_numbers(retrieval_result: dict) -> list[int]:
                 match = re.search(r"physical_index_(\d+)", raw)
                 if match:
                     pages.add(int(match.group(1)))
+
+        # Strategy 2: page_index directly on the node (fallback)
+        if not pages:
+            pi = node.get("page_index")
+            if isinstance(pi, int) and pi > 0:
+                pages.add(pi)
+            elif isinstance(pi, str):
+                m = re.search(r"\d+", pi)
+                if m:
+                    pages.add(int(m.group()))
+
     return sorted(pages)
 
 
@@ -260,6 +285,8 @@ with st.sidebar:
                 st.rerun()
 
     st.divider()
+    debug_mode = st.toggle("🔍 Debug mode", value=False)
+    st.divider()
     st.caption("**Stack**")
     st.caption("PageIndex · Groq · Llama 4 Scout · Streamlit")
     st.caption("TechEx Intelligent Enterprise Solutions Hackathon")
@@ -300,7 +327,11 @@ if question:
     # Assistant pipeline
     with st.chat_message("assistant"):
         with st.spinner("Finding relevant pages…"):
-            page_nums = retrieve_pages(st.session_state.doc_id, question)
+            page_nums, raw_retrieval = retrieve_pages(st.session_state.doc_id, question)
+
+        if debug_mode:
+            with st.expander("🔍 Raw PageIndex response", expanded=True):
+                st.json(raw_retrieval)
 
         if not page_nums:
             answer = (
