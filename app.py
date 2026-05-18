@@ -138,17 +138,21 @@ def groq_chat(model: str, messages: list, temperature: float = 0):
     Call Groq chat completions — via Lobster Trap or directly.
 
     The Groq SDK appends /openai/v1/ to whatever base_url you set, so it
-    cannot be pointed at Lobster Trap's /v1/chat/completions endpoint without
-    constructing a wrong URL.  When Lobster Trap is active we bypass the SDK
-    and call http://localhost:8080/v1/chat/completions with requests directly,
-    which is the standard OpenAI-compatible path Lobster Trap expects.
+    cannot be pointed at Lobster Trap without constructing a doubled path.
+    When Lobster Trap is active we bypass the SDK and POST directly to
+    http://localhost:8080/openai/v1/chat/completions — LT's Director strips
+    only scheme+host and forwards the path verbatim to Groq, so the full
+    /openai/v1/chat/completions path must be present in our request URL.
     """
     if st.session_state.get("lt_active"):
         resp = requests.post(
             f"{LOBSTERTRAP_URL}/chat/completions",
             headers={
-                "Authorization": f"Bearer {os.getenv('GROQ_API_KEY')}",
-                "Content-Type" : "application/json",
+                "Authorization"  : f"Bearer {os.getenv('GROQ_API_KEY')}",
+                "Content-Type"   : "application/json",
+                # Disable gzip so Lobster Trap can parse the JSON response body
+                # for header injection / egress rule evaluation.
+                "Accept-Encoding": "identity",
             },
             json={"model": model, "messages": messages, "temperature": temperature},
             timeout=120,
