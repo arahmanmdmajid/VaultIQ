@@ -192,7 +192,17 @@ We are building a RAG system over Saudi government urban development reports. En
 
 ---
 
-## Team
+## Team — Nexus Warden
+
+*"Connecting intelligence to action — with governance at every layer."*
+
+| Member |
+|---|
+| Abdur Rahman Muhammad Abdul Majid |
+| Muhammad Abdul Hadi Muhammad Abdul Majid |
+| Hamayl Zahid |
+| Abdul Aziz Muhammad Abdul Majid |
+| Muhammad Abdullah |
 
 Built for the **TechEx Intelligent Enterprise Solutions Hackathon** on [lablab.ai](https://lablab.ai/ai-hackathons/techex-intelligent-enterprise-solutions-hackathon/).
 
