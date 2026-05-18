@@ -19,6 +19,7 @@ from pathlib import Path
 import fitz  # PyMuPDF
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from groq import Groq
 from pageindex import PageIndexClient
@@ -28,11 +29,11 @@ from PIL import Image
 
 load_dotenv()
 
-VISION_MODEL       = "meta-llama/llama-4-scout-17b-16e-instruct"
-PAGEINDEX_MODEL    = "PageIndex Visual Reasoning (chat/completions)"
-MAX_IMAGES_PER_REQ = 5
-RENDER_DPI         = 150
-PAGEINDEX_CHAT_URL = "https://api.pageindex.ai/chat/completions"
+VISION_MODEL        = "meta-llama/llama-4-scout-17b-16e-instruct"
+PAGEINDEX_MODEL     = "PageIndex Visual Reasoning (chat/completions)"
+MAX_IMAGES_PER_REQ  = 5
+RENDER_DPI          = 150
+PAGEINDEX_CHAT_URL  = "https://api.pageindex.ai/chat/completions"
 
 ROOT = Path(__file__).parent
 
@@ -73,7 +74,7 @@ def get_clients():
 pi_client, groq_client = get_clients()
 
 
-# ─── Pipeline helpers ─────────────────────────────────────────────────────────
+# ─── Image helpers ────────────────────────────────────────────────────────────
 
 def compress_image(img_bytes: bytes, max_width: int = 1024, quality: int = 82) -> bytes:
     img = Image.open(io.BytesIO(img_bytes))
@@ -96,6 +97,103 @@ def render_page(pdf_bytes: bytes, page_num: int) -> bytes:
     return compress_image(pix.tobytes("png"))
 
 
+def render_image_gallery(page_images: list, thumb_width: int = 140):
+    """
+    Render page images as clickable thumbnails.
+    Clicking a thumbnail opens a full-screen lightbox overlay.
+    The overlay is injected into window.parent.document to escape the iframe
+    and truly cover the full Streamlit page.
+    """
+    if not page_images:
+        return
+
+    thumbs_html = ""
+    for label, img_bytes in page_images:
+        b64 = base64.b64encode(img_bytes).decode("utf-8")
+        src = f"data:image/jpeg;base64,{b64}"
+        thumbs_html += f"""
+        <div style="text-align:center;">
+          <img
+            src="{src}"
+            style="width:{thumb_width}px;height:auto;border-radius:6px;
+                   cursor:zoom-in;border:1px solid #dee2e6;
+                   transition:box-shadow .15s;box-shadow:0 1px 4px rgba(0,0,0,.1);"
+            onmouseover="this.style.boxShadow='0 4px 14px rgba(0,0,0,.25)'"
+            onmouseout="this.style.boxShadow='0 1px 4px rgba(0,0,0,.1)'"
+            onclick="openLightbox('{src}')"
+            title="Click to expand"
+          />
+          <div style="font-size:11px;color:#888;margin-top:5px;">Source · {label}</div>
+        </div>"""
+
+    html = f"""
+    <div style="display:flex;gap:10px;flex-wrap:wrap;padding:6px 0 2px;">
+      {thumbs_html}
+    </div>
+
+    <script>
+    function openLightbox(src) {{
+      // Remove any existing overlay first
+      var old = window.parent.document.getElementById('vaultiq-lightbox');
+      if (old) old.remove();
+
+      // Overlay backdrop
+      var overlay = window.parent.document.createElement('div');
+      overlay.id = 'vaultiq-lightbox';
+      overlay.style.cssText = [
+        'position:fixed','top:0','left:0','width:100%','height:100%',
+        'background:rgba(0,0,0,0.88)','z-index:99999',
+        'display:flex','align-items:center','justify-content:center',
+        'cursor:zoom-out'
+      ].join(';');
+
+      // Full-size image
+      var img = window.parent.document.createElement('img');
+      img.src = src;
+      img.style.cssText = [
+        'max-width:88vw','max-height:88vh',
+        'border-radius:8px','cursor:default',
+        'box-shadow:0 12px 48px rgba(0,0,0,0.6)'
+      ].join(';');
+      img.onclick = function(e) {{ e.stopPropagation(); }};
+
+      // Close button
+      var btn = window.parent.document.createElement('span');
+      btn.innerHTML = '&#x2715;';
+      btn.title = 'Close (Esc)';
+      btn.style.cssText = [
+        'position:fixed','top:22px','right:30px',
+        'font-size:2rem','color:white','cursor:pointer',
+        'font-weight:bold','line-height:1','opacity:0.8',
+        'transition:opacity .15s','user-select:none'
+      ].join(';');
+      btn.onmouseover = function() {{ this.style.opacity='1'; }};
+      btn.onmouseout  = function() {{ this.style.opacity='0.8'; }};
+      btn.onclick = function(e) {{ e.stopPropagation(); overlay.remove(); }};
+
+      overlay.onclick = function() {{ overlay.remove(); }};
+      overlay.appendChild(img);
+      overlay.appendChild(btn);
+      window.parent.document.body.appendChild(overlay);
+
+      // Escape key to close
+      function onKey(e) {{
+        if (e.key === 'Escape') {{
+          overlay.remove();
+          window.parent.document.removeEventListener('keydown', onKey);
+        }}
+      }}
+      window.parent.document.addEventListener('keydown', onKey);
+    }}
+    </script>
+    """
+
+    row_height = thumb_width + 40   # thumb height approx + label + padding
+    components.html(html, height=row_height, scrolling=False)
+
+
+# ─── Pipeline helpers ─────────────────────────────────────────────────────────
+
 def upload_pdf_to_pageindex(pdf_bytes: bytes) -> str:
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(pdf_bytes)
@@ -116,9 +214,6 @@ def wait_for_indexing(doc_id: str, timeout: int = 180) -> bool:
 
 
 def retrieve_pages(doc_id: str, question: str) -> tuple[list[int], dict, float]:
-    """
-    Call PageIndex Chat API. Returns (page_nums, raw_response, elapsed_ms).
-    """
     payload = {
         "doc_id"          : doc_id,
         "messages"        : [{"role": "user", "content": question}],
@@ -154,10 +249,6 @@ def _parse_citation_pages(text: str) -> list[int]:
 def answer_from_images(
     question: str, page_images: list, language: str
 ) -> tuple[str, dict, float]:
-    """
-    Send question + pages to Groq Vision.
-    Returns (answer_text, token_usage_dict, elapsed_ms).
-    """
     if not page_images:
         return "No relevant pages were found for this question.", {}, 0.0
 
@@ -177,7 +268,7 @@ def answer_from_images(
             f"Pages {page_labels} were selected by PageIndex as most relevant. "
             "Answer using ONLY what is visible in these page images. "
             "Cite the page label for every fact (e.g. [p.10]). "
-            "If the answer is not visible in the provided pages, say so explicitly.\n\n"
+            "If the answer is not visible, say so explicitly.\n\n"
             f"Question: {question}"
         )
 
@@ -215,7 +306,6 @@ def detect_language(text: str) -> str:
 # ─── Session state helpers ────────────────────────────────────────────────────
 
 def _save_current_lang_state():
-    """Snapshot messages and page_cache for the currently active demo language."""
     lang = st.session_state.get("demo_lang", "en")
     if st.session_state.get("is_demo"):
         st.session_state[f"messages_{lang}"]   = list(st.session_state.messages)
@@ -223,16 +313,9 @@ def _save_current_lang_state():
 
 
 def load_demo(lang: str):
-    """
-    Switch to a pre-indexed demo document.
-    Saves the current language's chat history before switching so it
-    can be restored if the user toggles back.
-    """
     _save_current_lang_state()
-
     demo      = DEMO_DOCS[lang]
     pdf_bytes = demo["pdf_path"].read_bytes()
-
     st.session_state.doc_id      = demo["doc_id"]
     st.session_state.pdf_name    = demo["pdf_path"].name
     st.session_state.pdf_bytes   = pdf_bytes
@@ -240,32 +323,30 @@ def load_demo(lang: str):
     st.session_state.indexed     = True
     st.session_state.is_demo     = True
     st.session_state.demo_lang   = lang
-
-    # Restore this language's saved history (empty list/dict if first visit)
-    st.session_state.messages   = list(st.session_state.get(f"messages_{lang}", []))
-    st.session_state.page_cache = dict(st.session_state.get(f"page_cache_{lang}", {}))
+    st.session_state.messages    = list(st.session_state.get(f"messages_{lang}", []))
+    st.session_state.page_cache  = dict(st.session_state.get(f"page_cache_{lang}", {}))
 
 
 # ─── Session state init ───────────────────────────────────────────────────────
 
 if "initialized" not in st.session_state:
-    st.session_state.initialized  = True
-    st.session_state.messages     = []
-    st.session_state.messages_en  = []
-    st.session_state.messages_ar  = []
-    st.session_state.doc_id       = None
-    st.session_state.pdf_name     = None
-    st.session_state.pdf_bytes    = None
-    st.session_state.total_pages  = 0
-    st.session_state.indexed      = False
-    st.session_state.is_demo      = False
-    st.session_state.demo_lang    = "en"
-    st.session_state.page_cache   = {}
+    st.session_state.initialized   = True
+    st.session_state.messages      = []
+    st.session_state.messages_en   = []
+    st.session_state.messages_ar   = []
+    st.session_state.doc_id        = None
+    st.session_state.pdf_name      = None
+    st.session_state.pdf_bytes     = None
+    st.session_state.total_pages   = 0
+    st.session_state.indexed       = False
+    st.session_state.is_demo       = False
+    st.session_state.demo_lang     = "en"
+    st.session_state.page_cache    = {}
     st.session_state.page_cache_en = {}
     st.session_state.page_cache_ar = {}
-    st.session_state.pipeline_log  = []   # list of per-query stat dicts
-    st.session_state.last_stats    = None  # most recent query stats
-    st.session_state.last_raw      = None  # most recent PageIndex raw response
+    st.session_state.pipeline_log  = []
+    st.session_state.last_stats    = None
+    st.session_state.last_raw      = None
     load_demo("en")
 
 
@@ -280,8 +361,7 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    .element-container figcaption { font-size: 0.72rem; color: #888; text-align: center; }
-    .stChatMessage p { font-size: 0.95rem; line-height: 1.55; }
+    .stChatMessage p { font-size: 0.95rem; line-height: 1.6; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -293,7 +373,6 @@ with st.sidebar:
     st.caption("Governed Document Intelligence")
     st.divider()
 
-    # Demo document
     st.markdown("**📋 Sample Document**")
     st.caption("Pre-indexed and ready to query")
 
@@ -316,17 +395,14 @@ with st.sidebar:
 
     st.divider()
 
-    # Upload your own
     with st.expander("📤 Upload your own document"):
         uploaded = st.file_uploader("Upload PDF", type=["pdf"], label_visibility="collapsed")
-
         if uploaded:
             if uploaded.name != st.session_state.pdf_name:
                 pdf_bytes = uploaded.read()
                 doc   = fitz.open(stream=pdf_bytes, filetype="pdf")
                 total = len(doc)
                 doc.close()
-
                 st.session_state.pdf_name    = uploaded.name
                 st.session_state.pdf_bytes   = pdf_bytes
                 st.session_state.total_pages = total
@@ -368,20 +444,22 @@ with st.sidebar:
     st.caption("TechEx Intelligent Enterprise Solutions Hackathon")
 
 
-# ─── Main area ────────────────────────────────────────────────────────────────
+# ─── Main tabs ────────────────────────────────────────────────────────────────
 
 st.header("VaultIQ — Governed Document Intelligence")
 st.caption(
     "Ask questions in **Arabic or English**. "
-    "Every answer is grounded in the source pages shown below it."
+    "Every answer is grounded in the source pages — click any thumbnail to expand it."
 )
 
 tab_chat, tab_dev = st.tabs(["💬 Chat", "🛠️ Developer Dashboard"])
 
+
 # ── Chat tab ──────────────────────────────────────────────────────────────────
 
 with tab_chat:
-    # Welcome card (only before first question on demo)
+
+    # Welcome card — only shown when no messages exist yet
     if not st.session_state.messages and st.session_state.is_demo:
         demo_info = DEMO_DOCS[st.session_state.demo_lang]
         st.info(
@@ -398,29 +476,32 @@ with tab_chat:
                 st.session_state["prefill_question"] = q
                 st.rerun()
 
-    # Chat history
+    # Render existing chat history
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg.get("page_images"):
-                cols = st.columns(min(len(msg["page_images"]), MAX_IMAGES_PER_REQ))
-                for col, (label, img_bytes) in zip(cols, msg["page_images"]):
-                    col.image(img_bytes, caption=f"Source · {label}", use_container_width=True)
+                render_image_gallery(msg["page_images"])
 
+    # Guard
     if not st.session_state.indexed:
         st.info("⬅️  Upload a PDF and click **Index with PageIndex** to start.")
+
+    # ── Chat input — page level so it always appears at the very bottom ───────
+    # Evaluated outside the tab block but response is rendered inside tab_chat
+    # by re-entering the tab context below.
 
 # ── Developer Dashboard tab ───────────────────────────────────────────────────
 
 with tab_dev:
     st.subheader("Pipeline Configuration")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Vision Model", "Llama 4 Scout")
-    col2.metric("Retrieval", "PageIndex Chat API")
-    col3.metric("Max Images / Request", MAX_IMAGES_PER_REQ)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Vision Model", "Llama 4 Scout")
+    c2.metric("Retrieval", "PageIndex Chat API")
+    c3.metric("Max Images / Request", MAX_IMAGES_PER_REQ)
 
-    cfg_col1, cfg_col2 = st.columns(2)
-    with cfg_col1:
+    cc1, cc2 = st.columns(2)
+    with cc1:
         st.markdown("**Active Document**")
         st.code(
             f"Name    : {st.session_state.pdf_name or '—'}\n"
@@ -429,8 +510,8 @@ with tab_dev:
             f"Indexed : {st.session_state.indexed}",
             language="yaml",
         )
-    with cfg_col2:
-        st.markdown("**Models**")
+    with cc2:
+        st.markdown("**Models & Endpoints**")
         st.code(
             f"Vision LLM  : {VISION_MODEL}\n"
             f"Retrieval   : {PAGEINDEX_CHAT_URL}\n"
@@ -440,8 +521,6 @@ with tab_dev:
         )
 
     st.divider()
-
-    # Last query stats
     st.subheader("Last Query")
     if st.session_state.last_stats:
         s = st.session_state.last_stats
@@ -450,48 +529,46 @@ with tab_dev:
         m2.metric("Page Render", f"{s['render_ms']:.0f} ms")
         m3.metric("Groq Vision", f"{s['groq_ms']:.0f} ms")
         m4.metric("Total", f"{s['total_ms']:.0f} ms")
-
-        st.markdown(f"**Question:** {s['question']}")
-        st.markdown(f"**Pages retrieved:** {s['pages_retrieved']}  |  **Images sent to Groq:** {s['images_sent']}  |  **Language:** `{s['language']}`")
-
+        st.markdown(
+            f"**Question:** {s['question']}  \n"
+            f"**Pages retrieved:** `{s['pages_retrieved']}`  "
+            f"· **Images sent:** `{s['images_sent']}`  "
+            f"· **Language:** `{s['language']}`"
+        )
         if s.get("token_usage"):
             u = s["token_usage"]
             st.markdown(
-                f"**Groq tokens** — Prompt: `{u.get('prompt_tokens', '?')}`  "
-                f"· Completion: `{u.get('completion_tokens', '?')}`  "
-                f"· Total: `{u.get('total_tokens', '?')}`"
+                f"**Groq tokens** — Prompt: `{u.get('prompt_tokens','?')}`  "
+                f"· Completion: `{u.get('completion_tokens','?')}`  "
+                f"· Total: `{u.get('total_tokens','?')}`"
             )
-
         with st.expander("📄 Raw PageIndex response"):
             st.json(st.session_state.last_raw or {})
     else:
         st.caption("No queries yet — ask a question in the Chat tab.")
 
     st.divider()
-
-    # Full pipeline log
     st.subheader(f"Query Log — {len(st.session_state.pipeline_log)} queries this session")
     if st.session_state.pipeline_log:
-        log_data = []
-        for i, entry in enumerate(reversed(st.session_state.pipeline_log), 1):
-            log_data.append({
-                "#"            : len(st.session_state.pipeline_log) - i + 1,
-                "Time"         : entry["timestamp"],
-                "Question"     : entry["question"][:60] + ("…" if len(entry["question"]) > 60 else ""),
-                "Pages"        : str(entry["pages_retrieved"]),
-                "Lang"         : entry["language"],
-                "PI (ms)"      : f"{entry['pageindex_ms']:.0f}",
-                "Render (ms)"  : f"{entry['render_ms']:.0f}",
-                "Groq (ms)"    : f"{entry['groq_ms']:.0f}",
-                "Total (ms)"   : f"{entry['total_ms']:.0f}",
-                "Tokens"       : entry.get("token_usage", {}).get("total_tokens", "—"),
+        log_rows = []
+        for entry in reversed(st.session_state.pipeline_log):
+            log_rows.append({
+                "Time"        : entry["timestamp"],
+                "Question"    : entry["question"][:60] + ("…" if len(entry["question"]) > 60 else ""),
+                "Pages"       : str(entry["pages_retrieved"]),
+                "Lang"        : entry["language"],
+                "PI (ms)"     : f"{entry['pageindex_ms']:.0f}",
+                "Render (ms)" : f"{entry['render_ms']:.0f}",
+                "Groq (ms)"   : f"{entry['groq_ms']:.0f}",
+                "Total (ms)"  : f"{entry['total_ms']:.0f}",
+                "Tokens"      : entry.get("token_usage", {}).get("total_tokens", "—"),
             })
-        st.dataframe(log_data, use_container_width=True, hide_index=True)
+        st.dataframe(log_rows, use_container_width=True, hide_index=True)
     else:
         st.caption("Query log is empty.")
 
 
-# ─── Chat input (page-level — always visible regardless of active tab) ────────
+# ─── Chat input (always at page bottom) ──────────────────────────────────────
 
 if not st.session_state.indexed:
     st.stop()
@@ -502,71 +579,85 @@ question = st.chat_input("Ask a question about your document…") or prefill
 if question:
     st.session_state.messages.append({"role": "user", "content": question})
 
-    # ── Step 1: PageIndex retrieval ───────────────────────────────────────────
-    with st.spinner("Finding relevant pages…"):
-        page_nums, raw_retrieval, pi_ms = retrieve_pages(
-            st.session_state.doc_id, question
-        )
-    st.session_state.last_raw = raw_retrieval
+    # All pipeline work and response rendering happens inside tab_chat so that
+    # spinners are scoped to the tab and don't dim the full page.
+    with tab_chat:
+        with st.chat_message("user"):
+            st.markdown(question)
 
-    # ── Step 2: Render pages ──────────────────────────────────────────────────
-    render_t0   = time.perf_counter()
-    page_images = []
-    for p in page_nums[:MAX_IMAGES_PER_REQ]:
-        if p not in st.session_state.page_cache:
-            st.session_state.page_cache[p] = render_page(st.session_state.pdf_bytes, p)
-        page_images.append((f"p{p}", st.session_state.page_cache[p]))
-    render_ms = (time.perf_counter() - render_t0) * 1000
+        with st.chat_message("assistant"):
 
-    lang = detect_language(question)
+            # Step 1 — PageIndex retrieval
+            with st.spinner("Finding relevant pages…"):
+                page_nums, raw_retrieval, pi_ms = retrieve_pages(
+                    st.session_state.doc_id, question
+                )
+            st.session_state.last_raw = raw_retrieval
 
-    # ── Step 3: Groq Vision ───────────────────────────────────────────────────
-    if not page_nums:
-        pi_answer = (
-            raw_retrieval.get("choices", [{}])[0]
-                         .get("message", {})
-                         .get("content", "")
-        )
-        answer = (
-            f"{pi_answer}\n\n"
-            "_⚠️ No specific page citations were returned — "
-            "answer is from PageIndex text reasoning, not visual page reading._"
-            if pi_answer else
-            "PageIndex did not return relevant content for this question. "
-            "Try rephrasing or check that the document covers this topic."
-        )
-        token_usage = {}
-        groq_ms     = 0.0
-    else:
-        with st.spinner("Reading pages…"):
-            answer, token_usage, groq_ms = answer_from_images(question, page_images, lang)
+            # Step 2 — Render pages on-demand
+            render_t0   = time.perf_counter()
+            page_images = []
+            for p in page_nums[:MAX_IMAGES_PER_REQ]:
+                if p not in st.session_state.page_cache:
+                    st.session_state.page_cache[p] = render_page(
+                        st.session_state.pdf_bytes, p
+                    )
+                page_images.append((f"p{p}", st.session_state.page_cache[p]))
+            render_ms = (time.perf_counter() - render_t0) * 1000
 
-    # ── Record stats ──────────────────────────────────────────────────────────
+            lang = detect_language(question)
+
+            # Step 3 — Groq Vision (or fallback)
+            if not page_nums:
+                pi_answer = (
+                    raw_retrieval.get("choices", [{}])[0]
+                                 .get("message", {})
+                                 .get("content", "")
+                )
+                answer = (
+                    f"{pi_answer}\n\n"
+                    "_⚠️ No specific page citations were returned — "
+                    "answer is from PageIndex text reasoning, not visual page reading._"
+                    if pi_answer else
+                    "PageIndex did not return relevant content for this question. "
+                    "Try rephrasing or check that the document covers this topic."
+                )
+                token_usage, groq_ms = {}, 0.0
+            else:
+                with st.spinner("Reading pages…"):
+                    answer, token_usage, groq_ms = answer_from_images(
+                        question, page_images, lang
+                    )
+
+            # Display answer and thumbnails
+            st.markdown(answer)
+            if page_images:
+                render_image_gallery(page_images)
+
+    # Record stats
     total_ms = pi_ms + render_ms + groq_ms
     stats = {
-        "timestamp"     : datetime.now().strftime("%H:%M:%S"),
-        "question"      : question,
+        "timestamp"      : datetime.now().strftime("%H:%M:%S"),
+        "question"       : question,
         "pages_retrieved": page_nums,
-        "images_sent"   : len(page_images),
-        "language"      : lang,
-        "pageindex_ms"  : pi_ms,
-        "render_ms"     : render_ms,
-        "groq_ms"       : groq_ms,
-        "total_ms"      : total_ms,
-        "token_usage"   : token_usage,
+        "images_sent"    : len(page_images),
+        "language"       : lang,
+        "pageindex_ms"   : pi_ms,
+        "render_ms"      : render_ms,
+        "groq_ms"        : groq_ms,
+        "total_ms"       : total_ms,
+        "token_usage"    : token_usage,
     }
     st.session_state.last_stats = stats
     st.session_state.pipeline_log.append(stats)
 
-    # ── Persist to language-specific history ──────────────────────────────────
+    # Persist message to session (and to per-language store)
     st.session_state.messages.append({
         "role"       : "assistant",
         "content"    : answer,
         "page_images": page_images,
     })
     if st.session_state.is_demo:
-        lang_key = st.session_state.demo_lang
-        st.session_state[f"messages_{lang_key}"]   = list(st.session_state.messages)
-        st.session_state[f"page_cache_{lang_key}"] = dict(st.session_state.page_cache)
-
-    st.rerun()
+        lk = st.session_state.demo_lang
+        st.session_state[f"messages_{lk}"]   = list(st.session_state.messages)
+        st.session_state[f"page_cache_{lk}"] = dict(st.session_state.page_cache)
