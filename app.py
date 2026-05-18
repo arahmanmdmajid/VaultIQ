@@ -4,7 +4,7 @@ Streamlit chat interface for the Vision RAG pipeline.
 
 Tabs:
   💬 Chat            — main user-facing interface
-  🛠️ Developer       — pipeline timings, raw JSON, model info, query log
+  🛠️ Developer       — pipeline flow, timings, raw JSON, query log
 """
 
 import base64
@@ -29,13 +29,11 @@ from PIL import Image
 
 load_dotenv()
 
-VISION_MODEL        = "meta-llama/llama-4-scout-17b-16e-instruct"
-PAGEINDEX_MODEL     = "PageIndex Visual Reasoning (chat/completions)"
-MAX_IMAGES_PER_REQ  = 5
-RENDER_DPI          = 150
-PAGEINDEX_CHAT_URL  = "https://api.pageindex.ai/chat/completions"
-
-ROOT = Path(__file__).parent
+VISION_MODEL       = "meta-llama/llama-4-scout-17b-16e-instruct"
+MAX_IMAGES_PER_REQ = 5
+RENDER_DPI         = 150
+PAGEINDEX_CHAT_URL = "https://api.pageindex.ai/chat/completions"
+ROOT               = Path(__file__).parent
 
 DEMO_DOCS = {
     "en": {
@@ -54,12 +52,68 @@ DEMO_DOCS = {
     },
 }
 
-SAMPLE_QUESTIONS = [
-    "What are the livability indicators used in this report?",
-    "What is the population of Madinah according to the report?",
-    "What sustainability goals were achieved in 2024?",
-    "What are the key challenges facing Madinah's urban development?",
-]
+# All user-facing strings, keyed by language
+UI = {
+    "en": {
+        "welcome_title" : "Sample document ready",
+        "welcome_body"  : (
+            "This report covers Madinah's urban livability metrics, population, "
+            "transport, healthcare, sustainability goals, and neighbourhood scores."
+        ),
+        "quick_questions": "💡 Quick questions",
+        "chat_input"    : "Ask a question about your document…",
+        "no_pages"      : (
+            "PageIndex did not return relevant content for this question. "
+            "Try rephrasing or check that the document covers this topic."
+        ),
+        "no_citations"  : (
+            "\n\n_⚠️ No specific page citations were returned — "
+            "answer is from PageIndex text reasoning, not visual page reading._"
+        ),
+        "indexed_ready" : "Indexed and ready",
+        "upload_prompt" : "⬅️  Upload a PDF and click **Index with PageIndex** to start.",
+        "sample_doc"    : "📋 Sample Document",
+        "sample_caption": "Pre-indexed and ready to query",
+        "mda_caption"   : "pages · Madinah Development Authority",
+    },
+    "ar": {
+        "welcome_title" : "الوثيقة النموذجية جاهزة",
+        "welcome_body"  : (
+            "يتناول هذا التقرير مؤشرات قابلية العيش في المدينة المنورة، "
+            "والسكان، والنقل، والرعاية الصحية، وأهداف الاستدامة، ودرجات الأحياء."
+        ),
+        "quick_questions": "💡 أسئلة سريعة",
+        "chat_input"    : "اطرح سؤالاً حول وثيقتك…",
+        "no_pages"      : (
+            "لم يُرجع PageIndex محتوى ذا صلة بهذا السؤال. "
+            "حاول إعادة الصياغة أو تحقق من أن الوثيقة تغطي هذا الموضوع."
+        ),
+        "no_citations"  : (
+            "\n\n_⚠️ لم تُرجع استشهادات صفحات محددة — "
+            "الإجابة مستندة إلى استدلال PageIndex النصي، لا القراءة البصرية للصفحات._"
+        ),
+        "indexed_ready" : "مُفهرسة وجاهزة",
+        "upload_prompt" : "⬅️  ارفع ملف PDF وانقر على **فهرسة بـ PageIndex** للبدء.",
+        "sample_doc"    : "📋 الوثيقة النموذجية",
+        "sample_caption": "مُفهرسة مسبقاً وجاهزة للاستعلام",
+        "mda_caption"   : "صفحة · هيئة تطوير منطقة المدينة المنورة",
+    },
+}
+
+SAMPLE_QUESTIONS = {
+    "en": [
+        "What are the livability indicators used in this report?",
+        "What is the population of Madinah according to the report?",
+        "What sustainability goals were achieved in 2024?",
+        "What are the key challenges facing Madinah's urban development?",
+    ],
+    "ar": [
+        "ما هي مؤشرات قابلية العيش المستخدمة في هذا التقرير؟",
+        "ما هو عدد سكان المدينة المنورة وفقاً للتقرير؟",
+        "ما هي أبرز إنجازات التنمية المستدامة في عام 2024؟",
+        "ما هي أبرز التحديات التي تواجه التطوير العمراني في المدينة المنورة؟",
+    ],
+}
 
 
 # ─── Clients ──────────────────────────────────────────────────────────────────
@@ -98,12 +152,7 @@ def render_page(pdf_bytes: bytes, page_num: int) -> bytes:
 
 
 def render_image_gallery(page_images: list, thumb_width: int = 140):
-    """
-    Render page images as clickable thumbnails.
-    Clicking a thumbnail opens a full-screen lightbox overlay.
-    The overlay is injected into window.parent.document to escape the iframe
-    and truly cover the full Streamlit page.
-    """
+    """Thumbnails with a full-screen lightbox via window.parent injection."""
     if not page_images:
         return
 
@@ -113,16 +162,14 @@ def render_image_gallery(page_images: list, thumb_width: int = 140):
         src = f"data:image/jpeg;base64,{b64}"
         thumbs_html += f"""
         <div style="text-align:center;">
-          <img
-            src="{src}"
+          <img src="{src}"
             style="width:{thumb_width}px;height:auto;border-radius:6px;
                    cursor:zoom-in;border:1px solid #dee2e6;
                    transition:box-shadow .15s;box-shadow:0 1px 4px rgba(0,0,0,.1);"
             onmouseover="this.style.boxShadow='0 4px 14px rgba(0,0,0,.25)'"
             onmouseout="this.style.boxShadow='0 1px 4px rgba(0,0,0,.1)'"
             onclick="openLightbox('{src}')"
-            title="Click to expand"
-          />
+            title="Click to expand" />
           <div style="font-size:11px;color:#888;margin-top:5px;">Source · {label}</div>
         </div>"""
 
@@ -130,66 +177,36 @@ def render_image_gallery(page_images: list, thumb_width: int = 140):
     <div style="display:flex;gap:10px;flex-wrap:wrap;padding:6px 0 2px;">
       {thumbs_html}
     </div>
-
     <script>
     function openLightbox(src) {{
-      // Remove any existing overlay first
       var old = window.parent.document.getElementById('vaultiq-lightbox');
       if (old) old.remove();
-
-      // Overlay backdrop
       var overlay = window.parent.document.createElement('div');
       overlay.id = 'vaultiq-lightbox';
-      overlay.style.cssText = [
-        'position:fixed','top:0','left:0','width:100%','height:100%',
-        'background:rgba(0,0,0,0.88)','z-index:99999',
-        'display:flex','align-items:center','justify-content:center',
-        'cursor:zoom-out'
-      ].join(';');
-
-      // Full-size image
+      overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.88);z-index:99999;display:flex;align-items:center;justify-content:center;cursor:zoom-out;';
       var img = window.parent.document.createElement('img');
       img.src = src;
-      img.style.cssText = [
-        'max-width:88vw','max-height:88vh',
-        'border-radius:8px','cursor:default',
-        'box-shadow:0 12px 48px rgba(0,0,0,0.6)'
-      ].join(';');
+      img.style.cssText = 'max-width:88vw;max-height:88vh;border-radius:8px;cursor:default;box-shadow:0 12px 48px rgba(0,0,0,0.6);';
       img.onclick = function(e) {{ e.stopPropagation(); }};
-
-      // Close button
       var btn = window.parent.document.createElement('span');
       btn.innerHTML = '&#x2715;';
       btn.title = 'Close (Esc)';
-      btn.style.cssText = [
-        'position:fixed','top:22px','right:30px',
-        'font-size:2rem','color:white','cursor:pointer',
-        'font-weight:bold','line-height:1','opacity:0.8',
-        'transition:opacity .15s','user-select:none'
-      ].join(';');
+      btn.style.cssText = 'position:fixed;top:22px;right:30px;font-size:2rem;color:white;cursor:pointer;font-weight:bold;opacity:0.8;transition:opacity .15s;user-select:none;';
       btn.onmouseover = function() {{ this.style.opacity='1'; }};
       btn.onmouseout  = function() {{ this.style.opacity='0.8'; }};
       btn.onclick = function(e) {{ e.stopPropagation(); overlay.remove(); }};
-
       overlay.onclick = function() {{ overlay.remove(); }};
       overlay.appendChild(img);
       overlay.appendChild(btn);
       window.parent.document.body.appendChild(overlay);
-
-      // Escape key to close
       function onKey(e) {{
-        if (e.key === 'Escape') {{
-          overlay.remove();
-          window.parent.document.removeEventListener('keydown', onKey);
-        }}
+        if (e.key==='Escape') {{ overlay.remove(); window.parent.document.removeEventListener('keydown',onKey); }}
       }}
       window.parent.document.addEventListener('keydown', onKey);
     }}
-    </script>
-    """
+    </script>"""
 
-    row_height = thumb_width + 40   # thumb height approx + label + padding
-    components.html(html, height=row_height, scrolling=False)
+    components.html(html, height=thumb_width + 40, scrolling=False)
 
 
 # ─── Pipeline helpers ─────────────────────────────────────────────────────────
@@ -259,16 +276,19 @@ def answer_from_images(
         prompt = (
             "أنت محلل خبير في الوثيقة المرفوعة. "
             f"الصفحات المرفقة {page_labels} اختارها PageIndex كأكثر الصفحات صلة. "
-            "أجب بالعربية فقط. اذكر رقم الصفحة لكل معلومة. "
-            "إذا لم تجد الإجابة، قل ذلك صراحة.\n\n"
+            "أجب مباشرةً بالعربية فقط دون عناوين أو تنسيق إضافي. "
+            "اذكر رقم الصفحة لكل معلومة بين قوسين مثل [ص.10]. "
+            "إذا لم تجد الإجابة في الصفحات المرفقة، قل ذلك صراحة.\n\n"
             f"السؤال: {question}"
         )
     else:
         prompt = (
-            f"Pages {page_labels} were selected by PageIndex as most relevant. "
-            "Answer using ONLY what is visible in these page images. "
-            "Cite the page label for every fact (e.g. [p.10]). "
-            "If the answer is not visible, say so explicitly.\n\n"
+            f"Pages {page_labels} were selected by PageIndex as most relevant to the question.\n\n"
+            "Instructions:\n"
+            "- Answer directly in plain paragraphs. Do NOT output headers like 'Question:', 'Answer:', or any section titles.\n"
+            "- Use ONLY information visible in the provided page images.\n"
+            "- Cite the page label inline for every fact, e.g. [p.10].\n"
+            "- If the answer is not visible in these pages, say so in one sentence.\n\n"
             f"Question: {question}"
         )
 
@@ -350,6 +370,14 @@ if "initialized" not in st.session_state:
     load_demo("en")
 
 
+# ─── Convenience accessor ─────────────────────────────────────────────────────
+
+def ui(key: str) -> str:
+    """Return the UI string for the current demo language (or English fallback)."""
+    lang = st.session_state.get("demo_lang", "en") if st.session_state.get("is_demo") else "en"
+    return UI[lang].get(key, UI["en"][key])
+
+
 # ─── Page config ──────────────────────────────────────────────────────────────
 
 st.set_page_config(
@@ -373,28 +401,41 @@ with st.sidebar:
     st.caption("Governed Document Intelligence")
     st.divider()
 
-    st.markdown("**📋 Sample Document**")
-    st.caption("Pre-indexed and ready to query")
+    # Demo document toggle
+    st.markdown(f"**{ui('sample_doc')}**")
+    st.caption(ui("sample_caption"))
 
     col_en, col_ar = st.columns(2)
     with col_en:
-        btn_type = "primary" if (st.session_state.demo_lang == "en" and st.session_state.is_demo) else "secondary"
-        if st.button("🇬🇧 English", use_container_width=True, type=btn_type):
+        t = "primary" if (st.session_state.demo_lang == "en" and st.session_state.is_demo) else "secondary"
+        if st.button("🇬🇧 English", use_container_width=True, type=t):
             load_demo("en")
             st.rerun()
     with col_ar:
-        btn_type = "primary" if (st.session_state.demo_lang == "ar" and st.session_state.is_demo) else "secondary"
-        if st.button("🇸🇦 Arabic", use_container_width=True, type=btn_type):
+        t = "primary" if (st.session_state.demo_lang == "ar" and st.session_state.is_demo) else "secondary"
+        if st.button("🇸🇦 العربية", use_container_width=True, type=t):
             load_demo("ar")
             st.rerun()
 
     if st.session_state.is_demo:
         demo_info = DEMO_DOCS[st.session_state.demo_lang]
         st.success(f"✅ {demo_info['label']}")
-        st.caption(f"{demo_info['pages']} pages · Madinah Development Authority")
+        st.caption(f"{demo_info['pages']} {ui('mda_caption')}")
 
     st.divider()
 
+    # Quick sample questions — always visible in sidebar when demo is active
+    if st.session_state.is_demo and st.session_state.indexed:
+        lang      = st.session_state.demo_lang
+        questions = SAMPLE_QUESTIONS[lang]
+        st.markdown(f"**{ui('quick_questions')}**")
+        for q in questions:
+            if st.button(q, key=f"sq_{q}", use_container_width=True):
+                st.session_state["prefill_question"] = q
+                st.rerun()
+        st.divider()
+
+    # Upload your own
     with st.expander("📤 Upload your own document"):
         uploaded = st.file_uploader("Upload PDF", type=["pdf"], label_visibility="collapsed")
         if uploaded:
@@ -427,7 +468,7 @@ with st.sidebar:
                     else:
                         st.error("Indexing timed out — try again.")
             else:
-                st.success("✅ Indexed and ready")
+                st.success(f"✅ {ui('indexed_ready')}")
 
     st.divider()
 
@@ -458,51 +499,133 @@ tab_chat, tab_dev = st.tabs(["💬 Chat", "🛠️ Developer Dashboard"])
 # ── Chat tab ──────────────────────────────────────────────────────────────────
 
 with tab_chat:
-
-    # Welcome card — only shown when no messages exist yet
+    # Welcome card — shown only before first message
     if not st.session_state.messages and st.session_state.is_demo:
         demo_info = DEMO_DOCS[st.session_state.demo_lang]
         st.info(
-            f"**{demo_info['flag']} Sample document ready** — "
+            f"**{demo_info['flag']} {ui('welcome_title')}** — "
             f"_{demo_info['label']}_\n\n"
-            "This report covers Madinah's urban livability metrics, population, "
-            "transport, healthcare, sustainability goals, and neighbourhood scores. "
-            "Ask anything below, or try one of the sample questions. "
-            "You can also upload your own PDF from the sidebar."
+            f"{ui('welcome_body')}"
         )
-        st.markdown("**Try asking:**")
-        for q in SAMPLE_QUESTIONS:
-            if st.button(q, key=f"sq_{q}"):
-                st.session_state["prefill_question"] = q
-                st.rerun()
 
-    # Render existing chat history
+    # Chat history
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg.get("page_images"):
                 render_image_gallery(msg["page_images"])
 
-    # Guard
     if not st.session_state.indexed:
-        st.info("⬅️  Upload a PDF and click **Index with PageIndex** to start.")
+        st.info(ui("upload_prompt"))
 
-    # ── Chat input — page level so it always appears at the very bottom ───────
-    # Evaluated outside the tab block but response is rendered inside tab_chat
-    # by re-entering the tab context below.
 
 # ── Developer Dashboard tab ───────────────────────────────────────────────────
 
 with tab_dev:
-    st.subheader("Pipeline Configuration")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Vision Model", "Llama 4 Scout")
-    c2.metric("Retrieval", "PageIndex Chat API")
-    c3.metric("Max Images / Request", MAX_IMAGES_PER_REQ)
 
-    cc1, cc2 = st.columns(2)
-    with cc1:
-        st.markdown("**Active Document**")
+    # ── Pipeline flow diagram ─────────────────────────────────────────────────
+    st.subheader("Pipeline Architecture")
+
+    last = st.session_state.last_stats
+    def step_color(ms_key):
+        """Green if fast, amber if moderate, red if slow. Grey if no data."""
+        if not last:
+            return "#6c757d"
+        ms = last.get(ms_key, 0)
+        if ms < 1000:   return "#28a745"
+        if ms < 3000:   return "#fd7e14"
+        return "#dc3545"
+
+    flow_html = f"""
+    <div style="display:flex;align-items:center;gap:0;flex-wrap:wrap;margin:12px 0 20px;font-family:sans-serif;">
+      {_flow_step("📝", "Question", "#4361ee", "")}
+      {_flow_arrow()}
+      {_flow_step("🔍", "PageIndex", step_color("pageindex_ms"),
+                  f"{last['pageindex_ms']:.0f} ms" if last else "—")}
+      {_flow_arrow()}
+      {_flow_step("📄", "Page Render", step_color("render_ms"),
+                  f"{last['render_ms']:.0f} ms" if last else "—")}
+      {_flow_arrow()}
+      {_flow_step("🤖", "Groq Vision", step_color("groq_ms"),
+                  f"{last['groq_ms']:.0f} ms" if last else "—")}
+      {_flow_arrow()}
+      {_flow_step("💬", "Answer", "#4361ee", "")}
+    </div>
+    """
+
+    # Use placeholder functions to avoid forward-reference issues — define them now
+    def _flow_step(icon, label, color, timing):
+        timing_html = f'<div style="font-size:11px;color:{color};font-weight:600;margin-top:3px;">{timing}</div>' if timing else ""
+        return f"""
+        <div style="display:flex;flex-direction:column;align-items:center;
+                    background:{color}18;border:1.5px solid {color};
+                    border-radius:10px;padding:10px 16px;min-width:100px;text-align:center;">
+          <div style="font-size:1.4rem;">{icon}</div>
+          <div style="font-size:13px;font-weight:600;color:#212529;margin-top:2px;">{label}</div>
+          {timing_html}
+        </div>"""
+
+    def _flow_arrow():
+        return '<div style="font-size:1.4rem;color:#adb5bd;padding:0 4px;align-self:center;">→</div>'
+
+    # Rebuild with real functions now defined
+    flow_html = f"""
+    <div style="display:flex;align-items:center;gap:0;flex-wrap:wrap;margin:12px 0 20px;font-family:sans-serif;">
+      {_flow_step("📝", "Question", "#4361ee", "")}
+      {_flow_arrow()}
+      {_flow_step("🔍", "PageIndex", step_color("pageindex_ms"),
+                  f"{last['pageindex_ms']:.0f} ms" if last else "—")}
+      {_flow_arrow()}
+      {_flow_step("📄", "Page Render", step_color("render_ms"),
+                  f"{last['render_ms']:.0f} ms" if last else "—")}
+      {_flow_arrow()}
+      {_flow_step("🤖", "Groq Vision", step_color("groq_ms"),
+                  f"{last['groq_ms']:.0f} ms" if last else "—")}
+      {_flow_arrow()}
+      {_flow_step("💬", "Answer", "#4361ee", "")}
+    </div>"""
+
+    components.html(flow_html, height=110, scrolling=False)
+
+    # ── Metric cards ──────────────────────────────────────────────────────────
+    st.subheader("Last Query Metrics")
+    if last:
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("⏱ PageIndex",   f"{last['pageindex_ms']:.0f} ms")
+        m2.metric("🖼 Page Render", f"{last['render_ms']:.0f} ms")
+        m3.metric("🤖 Groq Vision", f"{last['groq_ms']:.0f} ms")
+        m4.metric("⚡ Total",       f"{last['total_ms']:.0f} ms")
+        m5.metric("📄 Pages Used",  len(last["pages_retrieved"]))
+
+        d1, d2, d3 = st.columns(3)
+        d1.markdown(
+            f"**Question**  \n{last['question']}"
+        )
+        d2.markdown(
+            f"**Pages retrieved**  \n`{last['pages_retrieved']}`  \n"
+            f"**Images sent to Groq**  \n`{last['images_sent']}`  \n"
+            f"**Detected language**  \n`{last['language']}`"
+        )
+        if last.get("token_usage"):
+            u = last["token_usage"]
+            d3.markdown(
+                f"**Groq token usage**  \n"
+                f"Prompt: `{u.get('prompt_tokens','?')}`  \n"
+                f"Completion: `{u.get('completion_tokens','?')}`  \n"
+                f"Total: `{u.get('total_tokens','?')}`"
+            )
+
+        with st.expander("📄 Raw PageIndex response"):
+            st.json(st.session_state.last_raw or {})
+    else:
+        st.caption("No queries yet — ask a question in the Chat tab.")
+
+    st.divider()
+
+    # ── Active document info ──────────────────────────────────────────────────
+    st.subheader("Active Document & Models")
+    ci1, ci2 = st.columns(2)
+    with ci1:
         st.code(
             f"Name    : {st.session_state.pdf_name or '—'}\n"
             f"Pages   : {st.session_state.total_pages or '—'}\n"
@@ -510,8 +633,7 @@ with tab_dev:
             f"Indexed : {st.session_state.indexed}",
             language="yaml",
         )
-    with cc2:
-        st.markdown("**Models & Endpoints**")
+    with ci2:
         st.code(
             f"Vision LLM  : {VISION_MODEL}\n"
             f"Retrieval   : {PAGEINDEX_CHAT_URL}\n"
@@ -521,49 +643,25 @@ with tab_dev:
         )
 
     st.divider()
-    st.subheader("Last Query")
-    if st.session_state.last_stats:
-        s = st.session_state.last_stats
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("PageIndex", f"{s['pageindex_ms']:.0f} ms")
-        m2.metric("Page Render", f"{s['render_ms']:.0f} ms")
-        m3.metric("Groq Vision", f"{s['groq_ms']:.0f} ms")
-        m4.metric("Total", f"{s['total_ms']:.0f} ms")
-        st.markdown(
-            f"**Question:** {s['question']}  \n"
-            f"**Pages retrieved:** `{s['pages_retrieved']}`  "
-            f"· **Images sent:** `{s['images_sent']}`  "
-            f"· **Language:** `{s['language']}`"
-        )
-        if s.get("token_usage"):
-            u = s["token_usage"]
-            st.markdown(
-                f"**Groq tokens** — Prompt: `{u.get('prompt_tokens','?')}`  "
-                f"· Completion: `{u.get('completion_tokens','?')}`  "
-                f"· Total: `{u.get('total_tokens','?')}`"
-            )
-        with st.expander("📄 Raw PageIndex response"):
-            st.json(st.session_state.last_raw or {})
-    else:
-        st.caption("No queries yet — ask a question in the Chat tab.")
 
-    st.divider()
-    st.subheader(f"Query Log — {len(st.session_state.pipeline_log)} queries this session")
+    # ── Query log ─────────────────────────────────────────────────────────────
+    total_q = len(st.session_state.pipeline_log)
+    st.subheader(f"Session Query Log — {total_q} {'query' if total_q == 1 else 'queries'}")
     if st.session_state.pipeline_log:
-        log_rows = []
+        rows = []
         for entry in reversed(st.session_state.pipeline_log):
-            log_rows.append({
+            rows.append({
                 "Time"        : entry["timestamp"],
                 "Question"    : entry["question"][:60] + ("…" if len(entry["question"]) > 60 else ""),
-                "Pages"       : str(entry["pages_retrieved"]),
                 "Lang"        : entry["language"],
+                "Pages"       : str(entry["pages_retrieved"]),
                 "PI (ms)"     : f"{entry['pageindex_ms']:.0f}",
                 "Render (ms)" : f"{entry['render_ms']:.0f}",
                 "Groq (ms)"   : f"{entry['groq_ms']:.0f}",
                 "Total (ms)"  : f"{entry['total_ms']:.0f}",
                 "Tokens"      : entry.get("token_usage", {}).get("total_tokens", "—"),
             })
-        st.dataframe(log_rows, use_container_width=True, hide_index=True)
+        st.dataframe(rows, use_container_width=True, hide_index=True)
     else:
         st.caption("Query log is empty.")
 
@@ -574,27 +672,22 @@ if not st.session_state.indexed:
     st.stop()
 
 prefill  = st.session_state.pop("prefill_question", None)
-question = st.chat_input("Ask a question about your document…") or prefill
+question = st.chat_input(ui("chat_input")) or prefill
 
 if question:
     st.session_state.messages.append({"role": "user", "content": question})
 
-    # All pipeline work and response rendering happens inside tab_chat so that
-    # spinners are scoped to the tab and don't dim the full page.
     with tab_chat:
         with st.chat_message("user"):
             st.markdown(question)
 
         with st.chat_message("assistant"):
-
-            # Step 1 — PageIndex retrieval
             with st.spinner("Finding relevant pages…"):
                 page_nums, raw_retrieval, pi_ms = retrieve_pages(
                     st.session_state.doc_id, question
                 )
             st.session_state.last_raw = raw_retrieval
 
-            # Step 2 — Render pages on-demand
             render_t0   = time.perf_counter()
             page_images = []
             for p in page_nums[:MAX_IMAGES_PER_REQ]:
@@ -607,7 +700,6 @@ if question:
 
             lang = detect_language(question)
 
-            # Step 3 — Groq Vision (or fallback)
             if not page_nums:
                 pi_answer = (
                     raw_retrieval.get("choices", [{}])[0]
@@ -615,12 +707,8 @@ if question:
                                  .get("content", "")
                 )
                 answer = (
-                    f"{pi_answer}\n\n"
-                    "_⚠️ No specific page citations were returned — "
-                    "answer is from PageIndex text reasoning, not visual page reading._"
-                    if pi_answer else
-                    "PageIndex did not return relevant content for this question. "
-                    "Try rephrasing or check that the document covers this topic."
+                    pi_answer + ui("no_citations")
+                    if pi_answer else ui("no_pages")
                 )
                 token_usage, groq_ms = {}, 0.0
             else:
@@ -629,12 +717,11 @@ if question:
                         question, page_images, lang
                     )
 
-            # Display answer and thumbnails
             st.markdown(answer)
             if page_images:
                 render_image_gallery(page_images)
 
-    # Record stats
+    # Stats
     total_ms = pi_ms + render_ms + groq_ms
     stats = {
         "timestamp"      : datetime.now().strftime("%H:%M:%S"),
@@ -651,7 +738,6 @@ if question:
     st.session_state.last_stats = stats
     st.session_state.pipeline_log.append(stats)
 
-    # Persist message to session (and to per-language store)
     st.session_state.messages.append({
         "role"       : "assistant",
         "content"    : answer,
