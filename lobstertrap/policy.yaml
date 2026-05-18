@@ -47,8 +47,22 @@ ingress_rules:
         match_type: exact
         value: system
 
-  # 3. Flag queries that contain PII — log for compliance, but allow through.
-  #    A judge or auditor can review these in the audit log.
+  # 4. Escalate high-risk queries for human review rather than silently blocking.
+  #    Priority 85 — must run BEFORE log_pii_in_query (80) so the request is
+  #    not consumed by the lower-stakes LOG rule first. LT stops at the first
+  #    matching rule, so higher priority wins.
+  #    Threshold 0.35 catches borderline requests (e.g. code-gen prompts) that
+  #    the intent classifier scores as data_access with elevated risk rather
+  #    than a clean code_execution intent label.
+  - name: flag_high_risk_queries
+    priority: 85
+    action: HUMAN_REVIEW
+    conditions:
+      - field: risk_score
+        match_type: threshold
+        value: 0.35
+
+  # 5. Log any query that contains PII — allow through but leave an audit trail.
   - name: log_pii_in_query
     priority: 80
     action: LOG
@@ -57,19 +71,7 @@ ingress_rules:
         match_type: boolean
         value: true
 
-  # 4. Escalate high-risk queries for human review rather than silently blocking.
-  #    Threshold lowered to 0.35 — catches borderline requests (e.g. code-gen
-  #    prompts) that the intent classifier scores as data_access but with an
-  #    elevated risk score rather than a clean code_execution intent label.
-  - name: flag_high_risk_queries
-    priority: 70
-    action: HUMAN_REVIEW
-    conditions:
-      - field: risk_score
-        match_type: threshold
-        value: 0.35
-
-  # 5. Log any query that contains URLs (unusual for a doc-query use-case).
+  # 6. Log any query that contains URLs (unusual for a doc-query use-case).
   - name: log_queries_with_urls
     priority: 60
     action: LOG
