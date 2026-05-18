@@ -263,6 +263,53 @@ def _parse_citation_pages(text: str) -> list[int]:
     return sorted(pages)
 
 
+def retrieve_pages_fallback(
+    pdf_bytes: bytes, question: str, total_pages: int
+) -> tuple[list[int], float]:
+    """
+    Text-based fallback retrieval used when PageIndex is unavailable.
+    Extracts page text via PyMuPDF and asks a fast Groq text model which
+    pages are most relevant to the question.  Returns (page_nums, elapsed_ms).
+    """
+    import json
+
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    excerpts = []
+    for i in range(min(total_pages, 20)):
+        text = doc[i].get_text("text").strip()[:700]
+        if text:
+            excerpts.append(f"[Page {i + 1}]: {text}")
+    doc.close()
+
+    if not excerpts:
+        return [], 0.0
+
+    prompt = (
+        "You are a document retrieval assistant.\n"
+        "Identify which pages of the document are most relevant to the user's question.\n"
+        "Return ONLY a valid JSON array of page numbers (integers), e.g. [3, 7, 12].\n"
+        "Select at most 5 pages. Return [] if no pages are clearly relevant.\n\n"
+        f"Question: {question}\n\n"
+        "Page excerpts:\n" + "\n\n".join(excerpts)
+    )
+
+    t0       = time.perf_counter()
+    response = groq_client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+    )
+    elapsed = (time.perf_counter() - t0) * 1000
+
+    content = response.choices[0].message.content.strip()
+    try:
+        m     = re.search(r"\[[\d\s,]+\]", content)
+        pages = json.loads(m.group(0)) if m else []
+        return sorted(set(p for p in pages if 1 <= p <= total_pages)), elapsed
+    except Exception:
+        return [], elapsed
+
+
 def answer_from_images(
     question: str, page_images: list, language: str
 ) -> tuple[str, dict, float]:
@@ -389,7 +436,122 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    .stChatMessage p { font-size: 0.95rem; line-height: 1.6; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+    --cyan: #0d7494;
+    --cyan-dim: rgba(13, 116, 148, 0.10);
+    --green: #0f7a5a;
+    --green-dim: rgba(15, 122, 90, 0.12);
+    --amber: #b45309;
+    --amber-dim: rgba(180, 83, 9, 0.10);
+    --red: #b91c1c;
+    --red-dim: rgba(185, 28, 28, 0.10);
+    --grey: #6b7280;
+    --border: #e5e7eb;
+    --bg-subtle: #f9fafb;
+    --font-main: 'Inter', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', 'Consolas', monospace;
+    --radius: 10px;
+}
+
+.stChatMessage p { font-size: 0.95rem; line-height: 1.6; }
+
+/* ── Developer dashboard ── */
+.dev-section { margin: 0 0 1.5rem; }
+.dev-section-title {
+    font-family: var(--font-main);
+    font-size: 0.70rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    color: var(--grey);
+    margin: 0 0 0.6rem;
+}
+
+/* Pipeline step rows */
+.pipeline-step {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 14px;
+    border-radius: var(--radius);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    margin-bottom: 7px;
+    font-family: var(--font-main);
+}
+.dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.dot-green { background: #0f7a5a; box-shadow: 0 0 0 3px rgba(15,122,90,0.18); }
+.dot-amber { background: #b45309; box-shadow: 0 0 0 3px rgba(180,83,9,0.18); }
+.dot-red   { background: #b91c1c; box-shadow: 0 0 0 3px rgba(185,28,28,0.18); }
+.dot-grey  { background: #9ca3af; }
+.dot-cyan  { background: #0d7494; box-shadow: 0 0 0 3px rgba(13,116,148,0.18); }
+.step-name   { font-size: 0.875rem; font-weight: 600; color: #111827; flex: 1; }
+.step-detail { font-size: 0.80rem; color: #6b7280; font-family: var(--font-main); }
+.step-badge  {
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    padding: 2px 9px;
+    border-radius: 5px;
+    background: rgba(13,116,148,0.10);
+    color: #0d7494;
+    font-weight: 500;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+/* Timing pills */
+.timing-pill {
+    padding: 12px 16px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--bg-subtle);
+    margin-bottom: 10px;
+    font-family: var(--font-main);
+}
+.timing-pill-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 7px;
+}
+.timing-pill-name  { font-size: 0.875rem; font-weight: 600; color: #111827; }
+.timing-pill-value { font-size: 1.05rem; font-weight: 700; color: #0d7494; font-family: var(--font-mono); }
+.timing-bar-bg     { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.timing-bar-fill   { height: 100%; border-radius: 3px; background: #0d7494; }
+
+/* Model badge (larger, standalone) */
+.model-badge {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    padding: 0.25em 0.75em;
+    border-radius: 6px;
+    background: rgba(13,116,148,0.10);
+    color: #0d7494;
+    font-weight: 500;
+    display: inline-block;
+}
+
+/* Health rows */
+.health-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-main);
+    font-size: 0.875rem;
+}
+.health-row:last-child { border-bottom: none; }
+.health-label { flex: 1; color: #374151; }
+.health-ok    { color: #0f7a5a; font-weight: 600; }
+.health-err   { color: #b91c1c; font-weight: 600; }
+.health-na    { color: #6b7280; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -522,148 +684,238 @@ with tab_chat:
 # ── Developer Dashboard tab ───────────────────────────────────────────────────
 
 with tab_dev:
-
-    # ── Pipeline flow diagram ─────────────────────────────────────────────────
-    st.subheader("Pipeline Architecture")
-
     last = st.session_state.last_stats
-    def step_color(ms_key):
-        """Green if fast, amber if moderate, red if slow. Grey if no data."""
+
+    # ── Shared helpers ────────────────────────────────────────────────────────
+
+    def dot_color(ms):
+        """Map latency in ms to a CSS dot colour name."""
+        if ms is None: return "grey"
+        if ms < 1000:  return "green"
+        if ms < 3000:  return "amber"
+        return "red"
+
+    def step_row(dot, name, detail="", badge=None):
+        """Return an HTML pipeline-step row string."""
+        badge_html = f'<span class="step-badge">{badge}</span>' if badge else ""
+        return (
+            f'<div class="pipeline-step">'
+            f'<div class="dot dot-{dot}"></div>'
+            f'<span class="step-name">{name}</span>'
+            f'<span class="step-detail">{detail}</span>'
+            f'{badge_html}'
+            f'</div>'
+        )
+
+    def timing_pill(name, ms, total_ms):
+        """Return an HTML timing-pill string with a proportional progress bar."""
+        pct = min(int((ms / total_ms) * 100), 100) if total_ms else 0
+        return (
+            f'<div class="timing-pill">'
+            f'<div class="timing-pill-header">'
+            f'<span class="timing-pill-name">{name}</span>'
+            f'<span class="timing-pill-value">{ms:.0f} ms</span>'
+            f'</div>'
+            f'<div class="timing-bar-bg">'
+            f'<div class="timing-bar-fill" style="width:{pct}%"></div>'
+            f'</div>'
+            f'<div style="font-size:0.70rem;color:#9ca3af;margin-top:4px;">{pct}% of total</div>'
+            f'</div>'
+        )
+
+    # ── 5 sub-tabs ────────────────────────────────────────────────────────────
+
+    sub_status, sub_timings, sub_raw, sub_rag, sub_models = st.tabs([
+        "⚡ Pipeline Status",
+        "⏱ Timings",
+        "📄 Raw JSON",
+        "🔍 Vision RAG Debug",
+        "🤖 Models",
+    ])
+
+    # ── Pipeline Status ───────────────────────────────────────────────────────
+    with sub_status:
+        pi_ms_v     = last["pageindex_ms"] if last else None
+        render_ms_v = last["render_ms"]    if last else None
+        groq_ms_v   = last["groq_ms"]      if last else None
+        total_ms_v  = last["total_ms"]     if last else None
+
+        q_text      = last["question"] if last else "—"
+        q_short     = (q_text[:72] + "…") if len(q_text) > 72 else q_text
+
+        pi_detail     = f"{pi_ms_v:.0f} ms"    if pi_ms_v     is not None else "waiting…"
+        render_detail = (
+            f"{render_ms_v:.0f} ms · {last['images_sent']} image(s)" if last else "waiting…"
+        )
+        groq_detail   = f"{groq_ms_v:.0f} ms"  if groq_ms_v   is not None else "waiting…"
+        total_detail  = f"{total_ms_v:.0f} ms end-to-end" if total_ms_v is not None else "waiting…"
+
+        steps_html = (
+            '<div class="dev-section">'
+            '<div class="dev-section-title">Pipeline Steps — Last Query</div>'
+            + step_row("cyan",                    "1 · User Question",      q_short)
+            + step_row(dot_color(pi_ms_v),        "2 · PageIndex Retrieval", pi_detail,     "chat-completion API")
+            + step_row(dot_color(render_ms_v),    "3 · Page Rendering",      render_detail, f"DPI {RENDER_DPI}")
+            + step_row(dot_color(groq_ms_v),      "4 · Groq Vision LLM",    groq_detail,   "Llama 4 Scout")
+            + step_row("cyan",                    "5 · Answer Delivered",    total_detail)
+            + '</div>'
+        )
+        st.markdown(steps_html, unsafe_allow_html=True)
+
         if not last:
-            return "#6c757d"
-        ms = last.get(ms_key, 0)
-        if ms < 1000:   return "#28a745"
-        if ms < 3000:   return "#fd7e14"
-        return "#dc3545"
+            st.info("No queries yet — ask a question in the Chat tab to populate pipeline data.")
+        else:
+            total_q = len(st.session_state.pipeline_log)
+            st.markdown(f"---")
+            st.markdown(f"**Session summary** — {total_q} {'query' if total_q == 1 else 'queries'} this session")
+            rows = []
+            for entry in reversed(st.session_state.pipeline_log):
+                rows.append({
+                    "Time"       : entry["timestamp"],
+                    "Question"   : entry["question"][:55] + ("…" if len(entry["question"]) > 55 else ""),
+                    "Lang"       : entry["language"],
+                    "Pages"      : str(entry["pages_retrieved"]),
+                    "PI (ms)"    : f"{entry['pageindex_ms']:.0f}",
+                    "Render (ms)": f"{entry['render_ms']:.0f}",
+                    "Groq (ms)"  : f"{entry['groq_ms']:.0f}",
+                    "Total (ms)" : f"{entry['total_ms']:.0f}",
+                    "Tokens"     : entry.get("token_usage", {}).get("total_tokens", "—"),
+                })
+            st.dataframe(rows, use_container_width=True, hide_index=True)
 
-    flow_html = f"""
-    <div style="display:flex;align-items:center;gap:0;flex-wrap:wrap;margin:12px 0 20px;font-family:sans-serif;">
-      {_flow_step("📝", "Question", "#4361ee", "")}
-      {_flow_arrow()}
-      {_flow_step("🔍", "PageIndex", step_color("pageindex_ms"),
-                  f"{last['pageindex_ms']:.0f} ms" if last else "—")}
-      {_flow_arrow()}
-      {_flow_step("📄", "Page Render", step_color("render_ms"),
-                  f"{last['render_ms']:.0f} ms" if last else "—")}
-      {_flow_arrow()}
-      {_flow_step("🤖", "Groq Vision", step_color("groq_ms"),
-                  f"{last['groq_ms']:.0f} ms" if last else "—")}
-      {_flow_arrow()}
-      {_flow_step("💬", "Answer", "#4361ee", "")}
-    </div>
-    """
+    # ── Timings ───────────────────────────────────────────────────────────────
+    with sub_timings:
+        if last:
+            pi_ms_v     = last["pageindex_ms"]
+            render_ms_v = last["render_ms"]
+            groq_ms_v   = last["groq_ms"]
+            total_ms_v  = last["total_ms"]
 
-    # Use placeholder functions to avoid forward-reference issues — define them now
-    def _flow_step(icon, label, color, timing):
-        timing_html = f'<div style="font-size:11px;color:{color};font-weight:600;margin-top:3px;">{timing}</div>' if timing else ""
-        return f"""
-        <div style="display:flex;flex-direction:column;align-items:center;
-                    background:{color}18;border:1.5px solid {color};
-                    border-radius:10px;padding:10px 16px;min-width:100px;text-align:center;">
-          <div style="font-size:1.4rem;">{icon}</div>
-          <div style="font-size:13px;font-weight:600;color:#212529;margin-top:2px;">{label}</div>
-          {timing_html}
-        </div>"""
-
-    def _flow_arrow():
-        return '<div style="font-size:1.4rem;color:#adb5bd;padding:0 4px;align-self:center;">→</div>'
-
-    # Rebuild with real functions now defined
-    flow_html = f"""
-    <div style="display:flex;align-items:center;gap:0;flex-wrap:wrap;margin:12px 0 20px;font-family:sans-serif;">
-      {_flow_step("📝", "Question", "#4361ee", "")}
-      {_flow_arrow()}
-      {_flow_step("🔍", "PageIndex", step_color("pageindex_ms"),
-                  f"{last['pageindex_ms']:.0f} ms" if last else "—")}
-      {_flow_arrow()}
-      {_flow_step("📄", "Page Render", step_color("render_ms"),
-                  f"{last['render_ms']:.0f} ms" if last else "—")}
-      {_flow_arrow()}
-      {_flow_step("🤖", "Groq Vision", step_color("groq_ms"),
-                  f"{last['groq_ms']:.0f} ms" if last else "—")}
-      {_flow_arrow()}
-      {_flow_step("💬", "Answer", "#4361ee", "")}
-    </div>"""
-
-    components.html(flow_html, height=110, scrolling=False)
-
-    # ── Metric cards ──────────────────────────────────────────────────────────
-    st.subheader("Last Query Metrics")
-    if last:
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("⏱ PageIndex",   f"{last['pageindex_ms']:.0f} ms")
-        m2.metric("🖼 Page Render", f"{last['render_ms']:.0f} ms")
-        m3.metric("🤖 Groq Vision", f"{last['groq_ms']:.0f} ms")
-        m4.metric("⚡ Total",       f"{last['total_ms']:.0f} ms")
-        m5.metric("📄 Pages Used",  len(last["pages_retrieved"]))
-
-        d1, d2, d3 = st.columns(3)
-        d1.markdown(
-            f"**Question**  \n{last['question']}"
-        )
-        d2.markdown(
-            f"**Pages retrieved**  \n`{last['pages_retrieved']}`  \n"
-            f"**Images sent to Groq**  \n`{last['images_sent']}`  \n"
-            f"**Detected language**  \n`{last['language']}`"
-        )
-        if last.get("token_usage"):
-            u = last["token_usage"]
-            d3.markdown(
-                f"**Groq token usage**  \n"
-                f"Prompt: `{u.get('prompt_tokens','?')}`  \n"
-                f"Completion: `{u.get('completion_tokens','?')}`  \n"
-                f"Total: `{u.get('total_tokens','?')}`"
+            pills_html = (
+                '<div class="dev-section">'
+                '<div class="dev-section-title">Latency Breakdown — Last Query</div>'
+                + timing_pill("PageIndex Retrieval", pi_ms_v,     total_ms_v)
+                + timing_pill("Page Rendering",      render_ms_v, total_ms_v)
+                + timing_pill("Groq Vision LLM",     groq_ms_v,   total_ms_v)
+                + '</div>'
+                + f'<div class="timing-pill" style="border-color:#0d7494;background:rgba(13,116,148,0.08);">'
+                + f'<div class="timing-pill-header">'
+                + f'<span class="timing-pill-name" style="color:#0d7494;">Total End-to-End</span>'
+                + f'<span class="timing-pill-value">{total_ms_v:.0f} ms</span>'
+                + f'</div></div>'
             )
+            st.markdown(pills_html, unsafe_allow_html=True)
 
-        with st.expander("📄 Raw PageIndex response"):
-            st.json(st.session_state.last_raw or {})
-    else:
-        st.caption("No queries yet — ask a question in the Chat tab.")
+            if last.get("token_usage"):
+                u = last["token_usage"]
+                st.markdown("---")
+                tokens_html = (
+                    '<div class="dev-section">'
+                    '<div class="dev-section-title">Groq Token Usage</div>'
+                    + step_row("cyan",  "Prompt tokens",     "", str(u.get("prompt_tokens",     "?")))
+                    + step_row("green", "Completion tokens", "", str(u.get("completion_tokens", "?")))
+                    + step_row("cyan",  "Total tokens",      "", str(u.get("total_tokens",      "?")))
+                    + '</div>'
+                )
+                st.markdown(tokens_html, unsafe_allow_html=True)
+        else:
+            st.info("No queries yet — timing data will appear here after the first question.")
 
-    st.divider()
+    # ── Raw JSON ──────────────────────────────────────────────────────────────
+    with sub_raw:
+        st.markdown("**Raw PageIndex chat-completion response**")
+        st.caption("Full API response payload from the last query — citations, usage, and metadata.")
+        st.json(st.session_state.last_raw or {"info": "No query run yet."})
 
-    # ── Active document info ──────────────────────────────────────────────────
-    st.subheader("Active Document & Models")
-    ci1, ci2 = st.columns(2)
-    with ci1:
-        st.code(
-            f"Name    : {st.session_state.pdf_name or '—'}\n"
-            f"Pages   : {st.session_state.total_pages or '—'}\n"
-            f"Doc ID  : {st.session_state.doc_id or '—'}\n"
-            f"Indexed : {st.session_state.indexed}",
-            language="yaml",
+    # ── Vision RAG Debug ──────────────────────────────────────────────────────
+    with sub_rag:
+        if last:
+            pages_ok  = bool(last["pages_retrieved"])
+            images_ok = last["images_sent"] > 0
+
+            rag_html = (
+                '<div class="dev-section">'
+                '<div class="dev-section-title">Retrieval Details — Last Query</div>'
+                + step_row("cyan",
+                           "Question", last["question"])
+                + step_row("green" if pages_ok  else "red",
+                           "Pages retrieved",    "",
+                           str(last["pages_retrieved"]) if pages_ok else "none — no citations returned")
+                + step_row("green" if images_ok else "grey",
+                           "Images sent to Groq", "",
+                           f"{last['images_sent']} / {MAX_IMAGES_PER_REQ} max")
+                + step_row("cyan",
+                           "Detected language", "",
+                           "Arabic (ar)" if last["language"] == "ar" else "English (en)")
+                + step_row("cyan",
+                           "Document",
+                           f"{st.session_state.pdf_name} · {st.session_state.total_pages} pages")
+                + step_row("grey",
+                           "PageIndex doc_id",
+                           st.session_state.doc_id or "—")
+                + '</div>'
+            )
+            st.markdown(rag_html, unsafe_allow_html=True)
+
+            cache_count = len(st.session_state.page_cache)
+            st.markdown(f"**Page render cache** — {cache_count} page(s) cached this session")
+            if cache_count:
+                st.caption(f"Cached pages: {sorted(st.session_state.page_cache.keys())}")
+        else:
+            st.info("No queries yet — RAG debug data will appear here after the first question.")
+
+    # ── Models ────────────────────────────────────────────────────────────────
+    with sub_models:
+        groq_ok = bool(os.getenv("GROQ_API_KEY"))
+        pi_ok   = bool(os.getenv("PAGEINDEX_API_KEY"))
+        indexed = st.session_state.indexed
+
+        health_html = (
+            '<div class="dev-section">'
+            '<div class="dev-section-title">System Health</div>'
+            '<div class="health-row"><span class="health-label">Groq API key</span>'
+            + ('<span class="health-ok">✓ configured</span>' if groq_ok else '<span class="health-err">✗ missing</span>')
+            + '</div>'
+            '<div class="health-row"><span class="health-label">PageIndex API key</span>'
+            + ('<span class="health-ok">✓ configured</span>' if pi_ok else '<span class="health-err">✗ missing</span>')
+            + '</div>'
+            '<div class="health-row"><span class="health-label">Document indexed</span>'
+            + ('<span class="health-ok">✓ ready</span>' if indexed else '<span class="health-na">— not yet</span>')
+            + '</div>'
+            f'<div class="health-row">'
+            f'<span class="health-label">Page render cache</span>'
+            f'<span class="health-ok">{len(st.session_state.page_cache)} page(s)</span>'
+            f'</div>'
+            '</div>'
         )
-    with ci2:
-        st.code(
-            f"Vision LLM  : {VISION_MODEL}\n"
-            f"Retrieval   : {PAGEINDEX_CHAT_URL}\n"
-            f"Render DPI  : {RENDER_DPI}\n"
-            f"Image limit : {MAX_IMAGES_PER_REQ} per request",
-            language="yaml",
+
+        models_html = (
+            '<div class="dev-section">'
+            '<div class="dev-section-title">Active Models</div>'
+            + step_row("cyan", "Vision LLM",           "", VISION_MODEL)
+            + step_row("cyan", "Retrieval",            "", "PageIndex Visual Reasoning")
+            + step_row("grey", "Render DPI",           "", f"JPEG · {RENDER_DPI} DPI")
+            + step_row("grey", "Max images / request", "", str(MAX_IMAGES_PER_REQ))
+            + '</div>'
         )
 
-    st.divider()
+        pdf_name = st.session_state.pdf_name or "—"
+        doc_html = (
+            '<div class="dev-section">'
+            '<div class="dev-section-title">Active Document</div>'
+            + step_row("cyan" if indexed else "grey",
+                       pdf_name,
+                       f"{st.session_state.total_pages} pages")
+            + step_row("grey", "doc_id", st.session_state.doc_id or "—")
+            + '</div>'
+        )
 
-    # ── Query log ─────────────────────────────────────────────────────────────
-    total_q = len(st.session_state.pipeline_log)
-    st.subheader(f"Session Query Log — {total_q} {'query' if total_q == 1 else 'queries'}")
-    if st.session_state.pipeline_log:
-        rows = []
-        for entry in reversed(st.session_state.pipeline_log):
-            rows.append({
-                "Time"        : entry["timestamp"],
-                "Question"    : entry["question"][:60] + ("…" if len(entry["question"]) > 60 else ""),
-                "Lang"        : entry["language"],
-                "Pages"       : str(entry["pages_retrieved"]),
-                "PI (ms)"     : f"{entry['pageindex_ms']:.0f}",
-                "Render (ms)" : f"{entry['render_ms']:.0f}",
-                "Groq (ms)"   : f"{entry['groq_ms']:.0f}",
-                "Total (ms)"  : f"{entry['total_ms']:.0f}",
-                "Tokens"      : entry.get("token_usage", {}).get("total_tokens", "—"),
-            })
-        st.dataframe(rows, use_container_width=True, hide_index=True)
-    else:
-        st.caption("Query log is empty.")
+        # Render health + models; doc on right
+        col_health, col_models = st.columns(2)
+        with col_health:
+            st.markdown(health_html + doc_html, unsafe_allow_html=True)
+        with col_models:
+            st.markdown(models_html, unsafe_allow_html=True)
 
 
 # ─── Chat input (always at page bottom) ──────────────────────────────────────
@@ -687,6 +939,24 @@ if question:
                     st.session_state.doc_id, question
                 )
             st.session_state.last_raw = raw_retrieval
+
+            # ── Automatic fallback when PageIndex is unavailable ──────────────
+            # Detected via API errors (InsufficientCredits, auth failures, etc.)
+            # or a completely empty response with no choices array.
+            pi_api_error = (
+                "detail" in raw_retrieval        # e.g. {"detail": "InsufficientCredits"}
+                or "error" in raw_retrieval
+                or not raw_retrieval.get("choices")
+            )
+            fallback_used = False
+            if pi_api_error and st.session_state.pdf_bytes:
+                with st.spinner("Retrieval via local text index…"):
+                    page_nums, pi_ms = retrieve_pages_fallback(
+                        st.session_state.pdf_bytes,
+                        question,
+                        st.session_state.total_pages,
+                    )
+                fallback_used = True
 
             render_t0   = time.perf_counter()
             page_images = []
@@ -716,6 +986,12 @@ if question:
                     answer, token_usage, groq_ms = answer_from_images(
                         question, page_images, lang
                     )
+
+            if fallback_used:
+                answer += (
+                    "\n\n_⚠️ PageIndex unavailable (quota) — pages selected via "
+                    "local text extraction. Visual accuracy may be slightly lower._"
+                )
 
             st.markdown(answer)
             if page_images:
