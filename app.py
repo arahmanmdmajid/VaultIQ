@@ -3,19 +3,21 @@ VaultIQ — Governed Document Intelligence
 Streamlit chat interface for the Vision RAG pipeline.
 
 Flow:
-  1. User uploads a PDF → rendered on-demand with PyMuPDF
-  2. PDF is indexed by PageIndex (visual reasoning graph, ~30s)
-  3. User asks a question → PageIndex returns relevant page numbers
-  4. Those pages are compressed to JPEG and sent to Llama 4 Scout (Groq)
-  5. Answer + source page images are displayed inline
+  1. A demo document (MDA Livability Report) is pre-loaded on startup
+  2. User asks a question → PageIndex Chat API identifies relevant pages
+  3. Those pages are rendered from the PDF, compressed, and sent to Llama 4 Scout (Groq)
+  4. Answer + source page images are displayed inline
+  5. User can also upload their own PDF and index it via PageIndex
 """
 
 import base64
 import io
+import json
 import os
 import re
 import tempfile
 import time
+from pathlib import Path
 
 import fitz  # PyMuPDF
 import requests
@@ -29,12 +31,42 @@ from PIL import Image
 
 load_dotenv()
 
-VISION_MODEL       = "meta-llama/llama-4-scout-17b-16e-instruct"
-MAX_IMAGES_PER_REQ = 5    # Groq hard limit
-RENDER_DPI         = 150  # page render resolution
+VISION_MODEL        = "meta-llama/llama-4-scout-17b-16e-instruct"
+MAX_IMAGES_PER_REQ  = 5      # Groq hard limit
+RENDER_DPI          = 150    # page render resolution
+PAGEINDEX_CHAT_URL  = "https://api.pageindex.ai/chat/completions"
+
+ROOT = Path(__file__).parent
+
+# Pre-indexed demo documents (subset PDFs already committed to the repo)
+DEMO_DOCS = {
+    "en": {
+        "label"   : "Madinah Tranquil Livable City Report 2024",
+        "pdf_path": ROOT / "data" / "tranquil_en_subset.pdf",
+        "doc_id"  : "pi-cmp57ce4000u001qw6ueq8vz3",
+        "pages"   : 14,
+        "lang"    : "en",
+        "flag"    : "🇬🇧",
+    },
+    "ar": {
+        "label"   : "تقرير مدينة المدينة المنورة الهادئة للعيش 2024",
+        "pdf_path": ROOT / "data" / "tranquil_ar_subset.pdf",
+        "doc_id"  : "pi-cmp57cg9n00u201qw4bkt2o1i",
+        "pages"   : 14,
+        "lang"    : "ar",
+        "flag"    : "🇸🇦",
+    },
+}
+
+SAMPLE_QUESTIONS = [
+    "What are the livability indicators used in this report?",
+    "What is the population of Madinah according to the report?",
+    "What sustainability goals were achieved in 2024?",
+    "What are the key challenges facing Madinah's urban development?",
+]
 
 
-# ─── Clients (cached so they are not re-created on every rerun) ───────────────
+# ─── Clients ──────────────────────────────────────────────────────────────────
 
 @st.cache_resource
 def get_clients():
@@ -48,7 +80,6 @@ pi_client, groq_client = get_clients()
 # ─── Pipeline helpers ─────────────────────────────────────────────────────────
 
 def compress_image(img_bytes: bytes, max_width: int = 1024, quality: int = 82) -> bytes:
-    """Resize and re-encode as JPEG to reduce token usage."""
     img = Image.open(io.BytesIO(img_bytes))
     if img.mode in ("RGBA", "P"):
         img = img.convert("RGB")
@@ -87,7 +118,6 @@ def upload_pdf_to_pageindex(pdf_bytes: bytes) -> str:
 
 
 def wait_for_indexing(doc_id: str, timeout: int = 180) -> bool:
-    """Poll until PageIndex finishes building the reasoning graph."""
     for _ in range(timeout):
         if pi_client.is_retrieval_ready(doc_id):
             return True
@@ -95,19 +125,11 @@ def wait_for_indexing(doc_id: str, timeout: int = 180) -> bool:
     return False
 
 
-PAGEINDEX_CHAT_URL = "https://api.pageindex.ai/chat/completions"
-
-
 def retrieve_pages(doc_id: str, question: str) -> tuple[list[int], dict]:
     """
-    Use the PageIndex Chat API (the non-deprecated successor to submit_query/get_retrieval)
-    to find which pages are relevant to the question.
-
-    With enable_citations=True, PageIndex embeds page references in its answer as
-    citation tags: <doc=filename.pdf;page=N>
-    We parse those tags to get the page numbers, then feed those pages to Groq Vision.
-
-    Returns (sorted list of 1-based page numbers, raw API response for debugging).
+    Call the PageIndex Chat API with enable_citations=True.
+    Parse page numbers from citation tags like <doc=filename.pdf;page=N>.
+    Returns (page_nums, raw_response).
     """
     payload = {
         "doc_id"          : doc_id,
@@ -121,40 +143,26 @@ def retrieve_pages(doc_id: str, question: str) -> tuple[list[int], dict]:
     }
     response = requests.post(PAGEINDEX_CHAT_URL, json=payload, headers=headers, timeout=60)
     result   = response.json()
-
     content  = (
         result.get("choices", [{}])[0]
               .get("message", {})
               .get("content", "")
     )
-    page_nums = _parse_citation_pages(content)
-    return page_nums, result
+    return _parse_citation_pages(content), result
 
 
 def _parse_citation_pages(text: str) -> list[int]:
-    """
-    Extract page numbers from PageIndex citation tags.
-    Handles formats:
-      <doc=filename.pdf;page=3>
-      [page=3]
-      page 3  (plain fallback)
-    """
     pages = set()
-
-    # Primary: <doc=...;page=N>
     for m in re.finditer(r"<doc=[^>]*?;page=(\d+)>", text):
         pages.add(int(m.group(1)))
-
-    # Fallback: [page=N] or [p=N]
     if not pages:
         for m in re.finditer(r"\[(?:page|p)=(\d+)\]", text):
             pages.add(int(m.group(1)))
-
     return sorted(pages)
 
 
 def answer_from_images(question: str, page_images: list, language: str) -> str:
-    """Send question + JPEG pages to Llama 4 Scout via Groq."""
+    """Send question + JPEG page images to Llama 4 Scout via Groq."""
     if not page_images:
         return "No relevant pages were found for this question."
 
@@ -195,24 +203,38 @@ def answer_from_images(question: str, page_images: list, language: str) -> str:
 
 
 def detect_language(text: str) -> str:
-    """Return 'ar' if the text contains Arabic characters, else 'en'."""
     return "ar" if re.search(r"[؀-ۿ]", text) else "en"
+
+
+def load_demo(lang: str):
+    """Load a pre-indexed demo document into session state."""
+    demo = DEMO_DOCS[lang]
+    pdf_bytes = demo["pdf_path"].read_bytes()
+    st.session_state.doc_id      = demo["doc_id"]
+    st.session_state.pdf_name    = demo["pdf_path"].name
+    st.session_state.pdf_bytes   = pdf_bytes
+    st.session_state.total_pages = demo["pages"]
+    st.session_state.indexed     = True
+    st.session_state.is_demo     = True
+    st.session_state.demo_lang   = lang
+    st.session_state.page_cache  = {}
+    st.session_state.messages    = []
 
 
 # ─── Session state init ───────────────────────────────────────────────────────
 
-defaults = {
-    "messages"   : [],
-    "doc_id"     : None,
-    "pdf_name"   : None,
-    "pdf_bytes"  : None,
-    "page_cache" : {},   # {page_num: jpeg_bytes}
-    "total_pages": 0,
-    "indexed"    : False,
-}
-for key, val in defaults.items():
-    if key not in st.session_state:
-        st.session_state[key] = val
+if "initialized" not in st.session_state:
+    st.session_state.messages    = []
+    st.session_state.doc_id      = None
+    st.session_state.pdf_name    = None
+    st.session_state.pdf_bytes   = None
+    st.session_state.total_pages = 0
+    st.session_state.indexed     = False
+    st.session_state.is_demo     = False
+    st.session_state.demo_lang   = "en"
+    st.session_state.page_cache  = {}
+    st.session_state.initialized = True
+    load_demo("en")   # pre-load the English demo on first run
 
 
 # ─── Page config ──────────────────────────────────────────────────────────────
@@ -226,10 +248,9 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    /* Tighten up source image captions */
     .element-container figcaption { font-size: 0.72rem; color: #888; text-align: center; }
-    /* Slightly larger chat text */
     .stChatMessage p { font-size: 0.95rem; line-height: 1.55; }
+    .sample-q button { text-align: left !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -241,53 +262,75 @@ with st.sidebar:
     st.caption("Governed Document Intelligence")
     st.divider()
 
-    st.markdown("**Upload a PDF**")
-    uploaded = st.file_uploader(
-        "Upload PDF",
-        type=["pdf"],
-        label_visibility="collapsed",
-    )
+    # ── Demo document ──────────────────────────────────────────────────────────
+    st.markdown("**📋 Sample Document**")
+    st.caption("Pre-indexed and ready to query")
 
-    if uploaded:
-        # Detect new file
-        if uploaded.name != st.session_state.pdf_name:
-            pdf_bytes = uploaded.read()
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            total = len(doc)
-            doc.close()
+    col_en, col_ar = st.columns(2)
+    with col_en:
+        en_type = "primary" if st.session_state.demo_lang == "en" and st.session_state.is_demo else "secondary"
+        if st.button("🇬🇧 English", use_container_width=True, type=en_type):
+            load_demo("en")
+            st.rerun()
+    with col_ar:
+        ar_type = "primary" if st.session_state.demo_lang == "ar" and st.session_state.is_demo else "secondary"
+        if st.button("🇸🇦 Arabic", use_container_width=True, type=ar_type):
+            load_demo("ar")
+            st.rerun()
 
-            st.session_state.pdf_name    = uploaded.name
-            st.session_state.pdf_bytes   = pdf_bytes
-            st.session_state.total_pages = total
-            st.session_state.doc_id      = None
-            st.session_state.page_cache  = {}
-            st.session_state.messages    = []
-            st.session_state.indexed     = False
-
-        st.success(f"📄 {st.session_state.pdf_name}")
-        st.caption(f"{st.session_state.total_pages} pages")
-
-        if not st.session_state.indexed:
-            if st.button("Index with PageIndex ⚡", type="primary", use_container_width=True):
-                with st.spinner("Uploading to PageIndex..."):
-                    doc_id = upload_pdf_to_pageindex(st.session_state.pdf_bytes)
-                    st.session_state.doc_id = doc_id
-
-                with st.spinner("Building visual reasoning graph… (~30s)"):
-                    ready = wait_for_indexing(doc_id)
-
-                if ready:
-                    st.session_state.indexed = True
-                    st.rerun()
-                else:
-                    st.error("Indexing timed out — try again.")
-        else:
-            st.success("✅ Indexed and ready")
-            if st.button("Clear chat", use_container_width=True):
-                st.session_state.messages = []
-                st.rerun()
+    if st.session_state.is_demo:
+        demo_info = DEMO_DOCS[st.session_state.demo_lang]
+        st.success(f"✅ {demo_info['label']}")
+        st.caption(f"{demo_info['pages']} pages · Madinah Development Authority")
 
     st.divider()
+
+    # ── Upload your own document ───────────────────────────────────────────────
+    with st.expander("📤 Upload your own document"):
+        uploaded = st.file_uploader("Upload PDF", type=["pdf"], label_visibility="collapsed")
+
+        if uploaded:
+            if uploaded.name != st.session_state.pdf_name:
+                pdf_bytes = uploaded.read()
+                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                total = len(doc)
+                doc.close()
+
+                st.session_state.pdf_name    = uploaded.name
+                st.session_state.pdf_bytes   = pdf_bytes
+                st.session_state.total_pages = total
+                st.session_state.doc_id      = None
+                st.session_state.page_cache  = {}
+                st.session_state.messages    = []
+                st.session_state.indexed     = False
+                st.session_state.is_demo     = False
+
+            st.info(f"📄 {st.session_state.pdf_name} · {st.session_state.total_pages} pages")
+
+            if not st.session_state.indexed:
+                if st.button("Index with PageIndex ⚡", type="primary", use_container_width=True):
+                    with st.spinner("Uploading to PageIndex..."):
+                        doc_id = upload_pdf_to_pageindex(st.session_state.pdf_bytes)
+                        st.session_state.doc_id = doc_id
+
+                    with st.spinner("Building reasoning graph… (~30s)"):
+                        ready = wait_for_indexing(doc_id)
+
+                    if ready:
+                        st.session_state.indexed = True
+                        st.rerun()
+                    else:
+                        st.error("Indexing timed out — try again.")
+            else:
+                st.success("✅ Indexed and ready")
+
+    st.divider()
+
+    if st.session_state.indexed:
+        if st.button("🗑️ Clear chat", use_container_width=True):
+            st.session_state.messages = []
+            st.rerun()
+
     debug_mode = st.toggle("🔍 Debug mode", value=False)
     st.divider()
     st.caption("**Stack**")
@@ -299,35 +342,50 @@ with st.sidebar:
 
 st.header("VaultIQ — Governed Document Intelligence")
 st.caption(
-    "Upload any PDF, ask questions in **Arabic or English**. "
+    "Ask questions in **Arabic or English**. "
     "Every answer is grounded in the source pages shown below it."
 )
+
+# Welcome card — shown only before the first question
+if not st.session_state.messages and st.session_state.is_demo:
+    demo_info = DEMO_DOCS[st.session_state.demo_lang]
+    st.info(
+        f"**{demo_info['flag']} Sample document ready** — "
+        f"_{demo_info['label']}_\n\n"
+        "This report covers Madinah's urban livability metrics, population, "
+        "transport, healthcare, sustainability goals, and neighbourhood scores. "
+        "Ask anything below, or try one of the sample questions. "
+        "You can also upload your own PDF from the sidebar."
+    )
+    st.markdown("**Try asking:**")
+    for q in SAMPLE_QUESTIONS:
+        if st.button(q, key=f"sq_{q}", use_container_width=False):
+            st.session_state["prefill_question"] = q
+            st.rerun()
 
 # Render existing chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if msg.get("page_images"):
-            n = len(msg["page_images"])
-            cols = st.columns(min(n, MAX_IMAGES_PER_REQ))
+            cols = st.columns(min(len(msg["page_images"]), MAX_IMAGES_PER_REQ))
             for col, (label, img_bytes) in zip(cols, msg["page_images"]):
                 col.image(img_bytes, caption=f"Source · {label}", use_container_width=True)
 
-# Guard: must index before chatting
+# Guard: must be indexed before chatting
 if not st.session_state.indexed:
     st.info("⬅️  Upload a PDF and click **Index with PageIndex** to start.")
     st.stop()
 
-# Chat input
-question = st.chat_input("Ask a question about your document…")
+# Pick up a prefilled question from a sample-question button click
+prefill = st.session_state.pop("prefill_question", None)
+question = st.chat_input("Ask a question about your document…") or prefill
 
 if question:
-    # Append and render user bubble
     st.session_state.messages.append({"role": "user", "content": question})
     with st.chat_message("user"):
         st.markdown(question)
 
-    # Assistant pipeline
     with st.chat_message("assistant"):
         with st.spinner("Finding relevant pages…"):
             page_nums, raw_retrieval = retrieve_pages(st.session_state.doc_id, question)
@@ -337,30 +395,24 @@ if question:
                 st.json(raw_retrieval)
 
         if not page_nums:
-            # PageIndex answered but returned no parseable page citations.
-            # Surface its text answer as a fallback so the user still gets something useful.
             pi_answer = (
                 raw_retrieval.get("choices", [{}])[0]
                              .get("message", {})
                              .get("content", "")
             )
-            if pi_answer:
-                answer = (
-                    f"{pi_answer}\n\n"
-                    "_⚠️ No specific page citations were returned — "
-                    "answer is from PageIndex text reasoning, not visual page reading._"
-                )
-            else:
-                answer = (
-                    "PageIndex did not return relevant content for this question. "
-                    "Try rephrasing or check that the document covers this topic."
-                )
+            answer = (
+                f"{pi_answer}\n\n"
+                "_⚠️ No specific page citations were returned — "
+                "answer is from PageIndex text reasoning, not visual page reading._"
+                if pi_answer else
+                "PageIndex did not return relevant content for this question. "
+                "Try rephrasing or check that the document covers this topic."
+            )
             st.markdown(answer)
             st.session_state.messages.append(
                 {"role": "assistant", "content": answer, "page_images": []}
             )
         else:
-            # Render pages on-demand, cache for future turns
             page_images = []
             for p in page_nums[:MAX_IMAGES_PER_REQ]:
                 if p not in st.session_state.page_cache:
@@ -376,7 +428,6 @@ if question:
 
             st.markdown(answer)
 
-            # Inline source images
             cols = st.columns(len(page_images))
             for col, (label, img_bytes) in zip(cols, page_images):
                 col.image(img_bytes, caption=f"Source · {label}", use_container_width=True)
