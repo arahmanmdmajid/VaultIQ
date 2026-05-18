@@ -25,6 +25,11 @@ from groq import Groq
 from pageindex import PageIndexClient
 from PIL import Image
 
+
+class LobsterTrapDenyError(Exception):
+    """Raised when Lobster Trap blocks a request with a DENY policy action."""
+
+
 # ─── Config ───────────────────────────────────────────────────────────────────
 
 load_dotenv()
@@ -157,8 +162,33 @@ def groq_chat(model: str, messages: list, temperature: float = 0):
             json={"model": model, "messages": messages, "temperature": temperature},
             timeout=120,
         )
+        # Lobster Trap DENY — surface the policy message to the UI instead of a
+        # generic HTTP error.  LT returns 400/403 with the deny_message from policy.yaml.
+        if resp.status_code in (400, 403, 422):
+            body = {}
+            try:
+                body = resp.json()
+            except Exception:
+                pass
+            deny_msg = (
+                body.get("error", {}).get("message")
+                or body.get("detail")
+                or body.get("message")
+                or "Request blocked by VaultIQ governance policy."
+            )
+            raise LobsterTrapDenyError(deny_msg)
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"].strip(), resp.json().get("usage", {})
+        data = resp.json()
+        # Capture LT action from response headers so the chat UI can show a
+        # HUMAN_REVIEW warning banner when the request was flagged but allowed through.
+        lt_action = resp.headers.get("X-Lobstertrap-Action", "")
+        if lt_action and lt_action not in ("LOG", "ALLOW", ""):
+            st.session_state["lt_last_action"] = {
+                "action": lt_action,
+                "rule"  : resp.headers.get("X-Lobstertrap-Rule", ""),
+                "risk"  : resp.headers.get("X-Lobstertrap-Risk-Score", ""),
+            }
+        return data["choices"][0]["message"]["content"].strip(), data.get("usage", {})
     else:
         response = _groq_direct.chat.completions.create(
             model=model, messages=messages, temperature=temperature,
@@ -746,11 +776,32 @@ with st.sidebar:
 
 # ─── Main tabs ────────────────────────────────────────────────────────────────
 
-st.header("VaultIQ — Governed Document Intelligence")
-st.caption(
-    "Ask questions in **Arabic or English**. "
-    "Every answer is grounded in the source pages — click any thumbnail to expand it."
+_lt_on = st.session_state.lt_active
+_gov_badge = (
+    '<span style="background:#d1fae5;color:#065f46;font-size:0.72rem;font-weight:600;'
+    'padding:3px 10px;border-radius:99px;letter-spacing:0.03em;font-family:var(--font-main);">'
+    '🛡️&nbsp;Governed</span>'
+    if _lt_on else
+    '<span style="background:#f3f4f6;color:#6b7280;font-size:0.72rem;font-weight:600;'
+    'padding:3px 10px;border-radius:99px;font-family:var(--font-main);">'
+    '⚪&nbsp;Direct API</span>'
 )
+st.markdown(f"""
+<div style="padding:1.1rem 0 0.8rem;border-bottom:1px solid #e5e7eb;margin-bottom:0.5rem;">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:5px;">
+    <span style="font-size:1.9rem;line-height:1;">🏛️</span>
+    <span style="font-size:1.7rem;font-weight:700;color:#111827;letter-spacing:-0.025em;
+                 font-family:var(--font-main);">VaultIQ</span>
+    {_gov_badge}
+  </div>
+  <div style="font-size:0.88rem;color:#6b7280;font-family:var(--font-main);">
+    Governed Document Intelligence &nbsp;·&nbsp;
+    Ask in <strong style="color:#374151;">Arabic 🇸🇦</strong> or
+    <strong style="color:#374151;">English 🇬🇧</strong>
+    &nbsp;·&nbsp; Every answer cites the source pages
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
 tab_chat, tab_dev = st.tabs(["💬 Chat", "🛠️ Developer Dashboard"])
 
@@ -758,14 +809,46 @@ tab_chat, tab_dev = st.tabs(["💬 Chat", "🛠️ Developer Dashboard"])
 # ── Chat tab ──────────────────────────────────────────────────────────────────
 
 with tab_chat:
+    # Governance status ribbon — visible to judges at the top of every chat session
+    if st.session_state.lt_active:
+        st.markdown(
+            '<div style="background:rgba(15,122,90,0.07);border:1px solid rgba(15,122,90,0.2);'
+            'border-radius:8px;padding:7px 14px;margin-bottom:0.85rem;font-size:0.78rem;'
+            'color:#065f46;font-family:var(--font-main);display:flex;align-items:center;gap:6px;">'
+            '🛡️ <strong>Lobster Trap Active</strong> &nbsp;—&nbsp; '
+            'PII detection · Firewall rules · Rate limiting · Full audit log'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
     # Welcome card — shown only before first message
     if not st.session_state.messages and st.session_state.is_demo:
         demo_info = DEMO_DOCS[st.session_state.demo_lang]
-        st.info(
-            f"**{demo_info['flag']} {ui('welcome_title')}** — "
-            f"_{demo_info['label']}_\n\n"
-            f"{ui('welcome_body')}"
-        )
+        st.markdown(f"""
+<div style="background:linear-gradient(135deg,rgba(13,116,148,0.06) 0%,rgba(15,122,90,0.04) 100%);
+            border:1px solid #e5e7eb;border-radius:12px;padding:1.25rem 1.5rem;margin-bottom:0.75rem;">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:0.6rem;flex-wrap:wrap;">
+    <span style="font-size:1.5rem;">{demo_info['flag']}</span>
+    <span style="font-size:1rem;font-weight:600;color:#111827;font-family:var(--font-main);">
+      {demo_info['label']}
+    </span>
+    <span style="background:#d1fae5;color:#065f46;font-size:0.7rem;font-weight:600;
+                 padding:2px 9px;border-radius:99px;font-family:var(--font-main);">
+      ✅ Ready to query
+    </span>
+  </div>
+  <div style="font-size:0.875rem;color:#4b5563;line-height:1.6;font-family:var(--font-main);">
+    {ui('welcome_body')}
+  </div>
+  <div style="margin-top:0.9rem;padding-top:0.75rem;border-top:1px solid #e5e7eb;
+              font-size:0.78rem;color:#6b7280;display:flex;gap:20px;flex-wrap:wrap;
+              font-family:var(--font-main);">
+    <span>📄 {demo_info['pages']} pages</span>
+    <span>🌐 Bilingual EN / AR</span>
+    <span>🏛️ Madinah Development Authority</span>
+    <span>💡 Quick questions in the sidebar</span>
+  </div>
+</div>""", unsafe_allow_html=True)
 
     # Chat history
     for msg in st.session_state.messages:
@@ -1026,7 +1109,7 @@ with tab_dev:
             + step_row(
                 "green" if lt_on else "grey",
                 "Proxy status",
-                "http://localhost:8080/v1" if lt_on else "not running",
+                "http://localhost:8080/openai/v1" if lt_on else "not running",
                 "ACTIVE" if lt_on else "INACTIVE",
             )
             + step_row("cyan",  "Backend",          "https://api.groq.com/openai/v1")
@@ -1040,14 +1123,14 @@ with tab_dev:
         policy_html = (
             '<div class="dev-section">'
             '<div class="dev-section-title">Active Policy Rules</div>'
-            + step_row("red",   "block_prompt_injection",      "DENY",   "priority 100")
-            + step_row("red",   "block_code_execution_intent", "DENY",   "priority 90")
-            + step_row("red",   "block_system_command_intent", "DENY",   "priority 89")
-            + step_row("amber", "log_pii_in_query",            "LOG",    "priority 80")
-            + step_row("amber", "flag_high_risk_queries",      "HUMAN_REVIEW", "risk > 0.75")
-            + step_row("amber", "log_queries_with_urls",       "LOG",    "priority 60")
-            + step_row("amber", "log_pii_in_response",         "LOG",    "egress · priority 100")
-            + step_row("amber", "log_credentials_in_response", "LOG",    "egress · priority 90")
+            + step_row("red",   "block_prompt_injection",      "DENY",          "priority 100")
+            + step_row("red",   "block_code_execution_intent", "DENY",          "priority 90")
+            + step_row("red",   "block_system_command_intent", "DENY",          "priority 89")
+            + step_row("amber", "flag_high_risk_queries",      "HUMAN_REVIEW",  "risk > 0.35 · priority 85")
+            + step_row("amber", "log_pii_in_query",            "LOG",           "priority 80")
+            + step_row("amber", "log_queries_with_urls",       "LOG",           "priority 60")
+            + step_row("amber", "log_pii_in_response",         "LOG",           "egress · priority 100")
+            + step_row("amber", "log_credentials_in_response", "LOG",           "egress · priority 90")
             + '</div>'
         )
 
@@ -1107,97 +1190,147 @@ question = st.chat_input(ui("chat_input")) or prefill
 if question:
     st.session_state.messages.append({"role": "user", "content": question})
 
+    _pipeline_stats = None   # populated on successful pipeline completion
+    _denied_msg     = None   # populated if Lobster Trap issues a DENY
+
     with tab_chat:
         with st.chat_message("user"):
             st.markdown(question)
 
         with st.chat_message("assistant"):
-            with st.spinner("Finding relevant pages…"):
-                page_nums, raw_retrieval, pi_ms = retrieve_pages(
-                    st.session_state.doc_id, question
-                )
-            st.session_state.last_raw = raw_retrieval
-
-            # ── Automatic fallback when PageIndex is unavailable ──────────────
-            # Detected via API errors (InsufficientCredits, auth failures, etc.)
-            # or a completely empty response with no choices array.
-            pi_api_error = (
-                "detail" in raw_retrieval        # e.g. {"detail": "InsufficientCredits"}
-                or "error" in raw_retrieval
-                or not raw_retrieval.get("choices")
-            )
-            fallback_used = False
-            if pi_api_error and st.session_state.pdf_bytes:
-                with st.spinner("Retrieval via local text index…"):
-                    page_nums, pi_ms = retrieve_pages_fallback(
-                        st.session_state.pdf_bytes,
-                        question,
-                        st.session_state.total_pages,
+            try:
+                with st.spinner("Finding relevant pages…"):
+                    page_nums, raw_retrieval, pi_ms = retrieve_pages(
+                        st.session_state.doc_id, question
                     )
-                fallback_used = True
+                st.session_state.last_raw = raw_retrieval
 
-            render_t0   = time.perf_counter()
-            page_images = []
-            for p in page_nums[:MAX_IMAGES_PER_REQ]:
-                if p not in st.session_state.page_cache:
-                    st.session_state.page_cache[p] = render_page(
-                        st.session_state.pdf_bytes, p
+                # ── Automatic fallback when PageIndex is unavailable ──────────
+                # Detected via API errors (InsufficientCredits, auth failures, etc.)
+                # or a completely empty response with no choices array.
+                pi_api_error = (
+                    "detail" in raw_retrieval
+                    or "error" in raw_retrieval
+                    or not raw_retrieval.get("choices")
+                )
+                fallback_used = False
+                if pi_api_error and st.session_state.pdf_bytes:
+                    with st.spinner("Retrieval via local text index…"):
+                        page_nums, pi_ms = retrieve_pages_fallback(
+                            st.session_state.pdf_bytes,
+                            question,
+                            st.session_state.total_pages,
+                        )
+                    fallback_used = True
+
+                render_t0   = time.perf_counter()
+                page_images = []
+                for p in page_nums[:MAX_IMAGES_PER_REQ]:
+                    if p not in st.session_state.page_cache:
+                        st.session_state.page_cache[p] = render_page(
+                            st.session_state.pdf_bytes, p
+                        )
+                    page_images.append((f"p{p}", st.session_state.page_cache[p]))
+                render_ms = (time.perf_counter() - render_t0) * 1000
+
+                lang = detect_language(question)
+
+                if not page_nums:
+                    pi_answer = (
+                        raw_retrieval.get("choices", [{}])[0]
+                                     .get("message", {})
+                                     .get("content", "")
                     )
-                page_images.append((f"p{p}", st.session_state.page_cache[p]))
-            render_ms = (time.perf_counter() - render_t0) * 1000
+                    answer = (
+                        pi_answer + ui("no_citations")
+                        if pi_answer else ui("no_pages")
+                    )
+                    token_usage, groq_ms = {}, 0.0
+                else:
+                    with st.spinner("Reading pages…"):
+                        answer, token_usage, groq_ms = answer_from_images(
+                            question, page_images, lang
+                        )
 
-            lang = detect_language(question)
-
-            if not page_nums:
-                pi_answer = (
-                    raw_retrieval.get("choices", [{}])[0]
-                                 .get("message", {})
-                                 .get("content", "")
-                )
-                answer = (
-                    pi_answer + ui("no_citations")
-                    if pi_answer else ui("no_pages")
-                )
-                token_usage, groq_ms = {}, 0.0
-            else:
-                with st.spinner("Reading pages…"):
-                    answer, token_usage, groq_ms = answer_from_images(
-                        question, page_images, lang
+                if fallback_used:
+                    answer += (
+                        "\n\n_⚠️ PageIndex unavailable (quota) — pages selected via "
+                        "local text extraction. Visual accuracy may be slightly lower._"
                     )
 
-            if fallback_used:
-                answer += (
-                    "\n\n_⚠️ PageIndex unavailable (quota) — pages selected via "
-                    "local text extraction. Visual accuracy may be slightly lower._"
-                )
+                st.markdown(answer)
+                if page_images:
+                    render_image_gallery(page_images)
 
-            st.markdown(answer)
-            if page_images:
-                render_image_gallery(page_images)
+                # ── HUMAN_REVIEW warning ──────────────────────────────────────
+                # Lobster Trap flagged this query but allowed it through.
+                # Surface a notice so the user (and judges) see the governance action.
+                lt_meta = st.session_state.pop("lt_last_action", None)
+                if lt_meta and lt_meta.get("action") == "HUMAN_REVIEW":
+                    risk_raw = lt_meta.get("risk", "")
+                    try:
+                        risk_str = f" (risk score: {float(risk_raw):.2f})"
+                    except (ValueError, TypeError):
+                        risk_str = ""
+                    st.warning(
+                        f"🛡️ **Governance notice:** Lobster Trap flagged this query for "
+                        f"human review{risk_str}. The request was allowed through but has "
+                        f"been recorded in the audit log.",
+                        icon="⚠️",
+                    )
 
-    # Stats
-    total_ms = pi_ms + render_ms + groq_ms
-    stats = {
-        "timestamp"      : datetime.now().strftime("%H:%M:%S"),
-        "question"       : question,
-        "pages_retrieved": page_nums,
-        "images_sent"    : len(page_images),
-        "language"       : lang,
-        "pageindex_ms"   : pi_ms,
-        "render_ms"      : render_ms,
-        "groq_ms"        : groq_ms,
-        "total_ms"       : total_ms,
-        "token_usage"    : token_usage,
-    }
-    st.session_state.last_stats = stats
-    st.session_state.pipeline_log.append(stats)
+                total_ms = pi_ms + render_ms + groq_ms
+                _pipeline_stats = {
+                    "timestamp"      : datetime.now().strftime("%H:%M:%S"),
+                    "question"       : question,
+                    "pages_retrieved": page_nums,
+                    "images_sent"    : len(page_images),
+                    "language"       : lang,
+                    "pageindex_ms"   : pi_ms,
+                    "render_ms"      : render_ms,
+                    "groq_ms"        : groq_ms,
+                    "total_ms"       : total_ms,
+                    "token_usage"    : token_usage,
+                }
 
-    st.session_state.messages.append({
-        "role"       : "assistant",
-        "content"    : answer,
-        "page_images": page_images,
-    })
-    if st.session_state.is_demo:
-        lk = st.session_state.demo_lang
-        st.session_state[f"messages_{lk}"]   = list(st.session_state.messages)
-        st.session_state[f"page_cache_{lk}"] = dict(st.session_state.page_cache)
+            except LobsterTrapDenyError as e:
+                _denied_msg = str(e)
+                groq_ms     = 0.0          # no Groq call completed
+                st.markdown(f"""
+<div style="background:#fef2f2;border:1px solid #fecaca;border-left:4px solid #ef4444;
+            border-radius:10px;padding:1rem 1.25rem;margin:0.25rem 0;">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem;">
+    <span style="font-size:1.1rem;">🛡️</span>
+    <span style="font-size:0.9rem;font-weight:600;color:#991b1b;font-family:var(--font-main);">
+      Request Blocked by VaultIQ Governance
+    </span>
+  </div>
+  <div style="font-size:0.875rem;color:#7f1d1d;line-height:1.6;font-family:var(--font-main);">
+    {_denied_msg}
+  </div>
+  <div style="margin-top:0.75rem;padding-top:0.6rem;border-top:1px solid #fecaca;
+              font-size:0.75rem;color:#b91c1c;font-family:var(--font-mono);">
+    Streamlit → Lobster Trap :8080 → <strong>BLOCKED</strong>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+    # ── Persist results ───────────────────────────────────────────────────────
+    if _pipeline_stats:
+        st.session_state.last_stats = _pipeline_stats
+        st.session_state.pipeline_log.append(_pipeline_stats)
+        st.session_state.messages.append({
+            "role"       : "assistant",
+            "content"    : answer,
+            "page_images": page_images,
+        })
+        if st.session_state.is_demo:
+            lk = st.session_state.demo_lang
+            st.session_state[f"messages_{lk}"]   = list(st.session_state.messages)
+            st.session_state[f"page_cache_{lk}"] = dict(st.session_state.page_cache)
+
+    elif _denied_msg:
+        # Record the denial in chat history so it persists on rerun
+        st.session_state.messages.append({
+            "role"   : "assistant",
+            "content": f"🛡️ **Request blocked by governance policy.**\n\n{_denied_msg}",
+        })
